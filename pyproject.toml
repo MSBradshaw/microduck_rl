@@ -45,6 +45,12 @@ mjlab_microduck = "mjlab_microduck.tasks"
 # flag that submits the run to Hugging Face Jobs instead (see train_cli.py).
 train = "mjlab_microduck.train_cli:main"
   
+[tool.pytest.ini_options]
+# Repo root on sys.path so tests can import top-level `scripts/` modules
+# (e.g. `from scripts.measure_split_pose import ...`) the same way they
+# already import the installed `mjlab_microduck` package from `src/`.
+pythonpath = ["."]
+
 [tool.ruff]
 src = ["src"]  # Helpful for recognizing first-party imports.
 indent-width = 4
