@@ -41,23 +41,51 @@ right leg back, always (not randomized per episode) — chosen for simplicity;
 loss is never for asymmetric tasks (it would train the policy to fight its own
 lopsided target).
 
-## 2. Target pose — values TBD, must be measured in sim
+## 2. Target pose — measured, not guessed (UPDATED after running the measurement script)
 
 Per AGENTS.md's standup lesson (a 5mm-wrong `STAND_Z` once made the goal physically
-unreachable for days): **none of the numbers below get guessed**. Before locking the
-reward config, load the robot in the viewer, drive the candidate leg joint values by
-hand, hold for ~3s from a noisy standing init, and read off:
+unreachable for days): **none of the numbers below get guessed**.
 
-- `SPLIT_Z` — `trunk_base` z once settled (mirrors `STAND_Z`'s derivation)
-- natural resting **pitch** of the trunk in the settled pose (front split does not
-  necessarily settle trunk-vertical — legs move, but there's no guarantee the trunk
-  stays bolt-upright with no arms to counterbalance)
-- the actual **safe target angle** for hip_pitch/knee/ankle, short of the ±90° hard
-  stop (see §3 for why "short of the limit" is the deliberate choice, not a
-  placeholder)
+**Revision during implementation**: the original plan for this section called for a
+*dynamic* settle test (hold candidate ctrl for ~3s under real gravity, read off the
+equilibrium). Running it revealed that's not viable yet: this robot's servos are
+genuinely low-stiffness (`kp=0.55`, `forcerange=±0.96 N·m` — see
+`joints_properties.xml`), and only hold a pose through a trained policy's continuous
+active correction, not passive stiffness. Raw physics with no active controller just
+sags — confirmed empirically: even the plain standing HOME pose settled at
+`z=0.041` instead of the known-correct `0.115` with no active correction. There is no
+trained splits policy yet to supply that correction. `scripts/measure_split_pose.py`
+goes **kinematic** instead (gravity off, base pinned upright, robot lowered until its
+lowest point rests on the floor — the same technique `scripts/crouch_pose_editor.py`
+already uses), which sidesteps the sagging problem but means:
 
-`SPLIT_JOINT_OVERRIDES` (dict, same shape as standup's `SITTING_JOINT_OVERRIDES`)
-gets filled in from that measurement, not from CAD geometry or guesswork.
+- `SPLIT_Z` and the safe target angles are still real, measured geometric values —
+  **measured** = `0.098` at the chosen depth (see below), not guessed.
+- The natural resting **pitch** is no longer something a kinematic measurement can
+  reveal (the trunk is pinned upright throughout, by construction — there's no
+  dynamics to settle into a lean). `SPLIT_PITCH_TARGET = 0` (vertical) is used as a
+  **design default** here, not a measurement, and should be revisited once real
+  training telemetry shows what pitch the descending/holding robot actually wants
+  (§7 tracks this as open).
+
+**Measured values** (`left_hip_pitch = right_hip_pitch = -75°`, same sign on both —
+see the sign-convention note below; knee/ankle left at HOME):
+`SPLIT_JOINT_OVERRIDES = {2: -1.309, 11: -1.309}` (indices per the standard
+0-4/9-13 leg layout), `SPLIT_Z = 0.098`. 75° was chosen over pushing closer to the
+±90° hard stop as a comfortable safety margin (spread ~16.5cm foot-to-foot vs. ~16.8cm
+at 80° — diminishing returns near the limit); ankle/knee angles for a flatter foot
+contact are left as a later refinement once training gives real feedback, per
+AGENTS.md's own expectation of a few tuning passes rather than perfecting this
+offline.
+
+**Sign-convention finding** (the reason this script exists, not a footnote): HOME
+already has `left_hip_pitch=-0.4579`, `right_hip_pitch=+0.4579` for a *symmetric*
+standing stance — i.e. the two joints use **mirrored** axis conventions. So the
+*same* numeric sign on both joints drives the legs in *opposite* anatomical
+directions (confirmed: ±50°/∓50° left the two feet within 1e-8 of each other — same
+direction; +50°/+50° put them ~13cm apart — opposite directions). Guessing
+"obviously opposite signs for opposite legs" would have produced a silently-wrong
+`SPLIT_JOINT_OVERRIDES`.
 
 ## 3. Reward design
 
@@ -118,8 +146,10 @@ combined angle:
 - **`roll_split`** — Gaussian on roll only, **generous std** (per explicit
   direction: "so long as it does not fall, tipping side to side a little is fine" —
   mild sway should cost almost nothing)
-- **`pitch_split`** — Gaussian tracking the *measured* natural resting pitch (§2),
-  not pure vertical — same "measure it, don't guess it" rule as height
+- **`pitch_split`** — Gaussian tracking `SPLIT_PITCH_TARGET`. Originally intended
+  as a *measured* natural resting pitch; §2 explains why that turned out to require
+  an active policy we don't have yet, so this is `0` (vertical) as a design default
+  for now, tracked as open in §7
 
 ### 3.4 Motion quality
 
@@ -212,10 +242,16 @@ actually training rather than deciding blind now.
 
 ## 7. Open questions / explicitly out of scope for this doc
 
-- Exact reward weights, stds, and `SPLIT_JOINT_OVERRIDES` values — all deliberately
-  left as `<TBD>` above pending the in-sim settle-test measurement (§2, §6). Filling
-  these in with guessed numbers would repeat the exact `STAND_Z` mistake AGENTS.md
-  warns about.
+- Exact reward weights and stds are still pending the reward-wiring task;
+  `SPLIT_JOINT_OVERRIDES`/`SPLIT_Z` were resolved by the Task 1 measurement script
+  (§2) and are no longer TBD.
+- `SPLIT_PITCH_TARGET = 0` is a design default, not a measurement (§2, §3.3) — a
+  kinematic (gravity-off) measurement can't reveal a natural dynamic lean, since
+  that concept only exists once an active policy is holding the pose. Revisit once
+  real training telemetry shows what pitch the descending/holding robot wants.
+- Ankle/knee angles for a flatter foot-ground contact at the chosen depth (75°
+  hip_pitch) were not tuned — left at HOME. Worth a follow-up measurement pass if
+  the trained policy's foot contact looks obviously wrong.
 - `com_downward_velocity`'s height gate (whole descent vs. only-near-target) — noted
   as undecided in §3.4, resolve empirically.
 - Whether `splits_composite` (multiplicative) is needed — add only if training shows
