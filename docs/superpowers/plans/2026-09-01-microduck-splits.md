@@ -8,9 +8,9 @@ holds it.
 
 **Architecture:** New `microduck_splits_env_cfg.py` built on `make_velocity_env_cfg()`,
 following the standup template exactly (DR/obs/noise/delay/NaN-guard stack copied
-wholesale). Four new pure `mdp.py` functions (`roll_split`, `pitch_split`,
-`com_downward_velocity`, `pose_target_depth_curriculum`). A new headless measurement
-script determines the real target-pose numbers before they're wired into rewards.
+wholesale). Three new pure `mdp.py` functions (`roll_split`, `pitch_split`,
+`pose_target_depth_curriculum`). A new headless measurement script determines the
+real target-pose numbers before they're wired into rewards.
 
 **Tech Stack:** mjlab (MuJoCo Warp), PPO via rsl_rl, PyTorch, pytest. Runs inside the
 `microduck` Docker container per `HOW-TO.md` (Intel Mac, no native torch/mujoco).
@@ -269,7 +269,13 @@ script against the real model; do not guess them.
 
 ---
 
-## Task 2: New mdp.py reward functions (roll_split, pitch_split, com_downward_velocity)
+## Task 2: New mdp.py reward functions (roll_split, pitch_split)
+
+**REVISED after Task 1**: `com_downward_velocity` was dropped (YAGNI — splits'
+descent is a single-direction reach like "sit down", not standup's discontinuous
+prone-recovery problem; `pose_split_l1`/`height_split_l1` already supply a dense
+gradient). The existing `trunk_downward_velocity_penalty` is reused as-is instead,
+introduced late by curriculum (see Task 5/6). See spec §3.4 for the full reasoning.
 
 **Files:**
 - Modify: `src/mjlab_microduck/tasks/mdp.py` (add after `com_upward_velocity`, ~line 934)
@@ -281,20 +287,19 @@ script against the real model; do not guess them.
 - Produces:
   - `roll_split(env, asset_cfg=_DEFAULT_ASSET_CFG, std=0.45) -> Tensor`
   - `pitch_split(env, target_pitch, asset_cfg=_DEFAULT_ASSET_CFG, std=0.15) -> Tensor`
-  - `com_downward_velocity(env, asset_cfg=_DEFAULT_ASSET_CFG, min_height=0.0, max_vz=None) -> Tensor`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_mdp_splits.py
-"""roll_split / pitch_split / com_downward_velocity: pure-tensor reward
-functions for the splits task. Mock env/asset pattern mirrors
-tests/test_descent_speed.py — no real mjlab env needed.
+"""roll_split / pitch_split: pure-tensor reward functions for the splits
+task. Mock env/asset pattern mirrors tests/test_descent_speed.py — no real
+mjlab env needed.
 """
 
 import torch
 
-from mjlab_microduck.tasks.mdp import com_downward_velocity, pitch_split, roll_split
+from mjlab_microduck.tasks.mdp import pitch_split, roll_split
 
 
 class _GravityData:
@@ -341,86 +346,16 @@ def test_pitch_split_peaks_at_the_target_not_at_zero():
     assert float(out_at_vertical[0]) < float(out[0])
 
 
-class _VelData:
-    def __init__(self, z, vz):
-        n = len(z)
-        self.root_link_pos_w = torch.zeros(n, 3)
-        self.root_link_pos_w[:, 2] = torch.tensor(z, dtype=torch.float32)
-        self.root_link_lin_vel_w = torch.zeros(n, 3)
-        self.root_link_lin_vel_w[:, 2] = torch.tensor(vz, dtype=torch.float32)
-
-
-class _VelAsset:
-    def __init__(self, data):
-        self.data = data
-
-
-class _Terrain:
-    def __init__(self, n):
-        self.env_origins = torch.zeros(n, 3)
-
-
-class _VelEnv:
-    def __init__(self, z, vz):
-        self._a = _VelAsset(_VelData(z, vz))
-        self._terrain = _Terrain(len(z))
-        self.scene = self
-        self.terrain = self._terrain
-
-    def __getitem__(self, _k):
-        return self._a
-
-
-def test_com_downward_velocity_rewards_descending_above_min_height():
-    env = _VelEnv(z=[0.10], vz=[-0.3])
-    out = com_downward_velocity(env, min_height=0.05)
-    assert abs(float(out[0]) - 0.3) < 1e-6
-
-
-def test_com_downward_velocity_gates_off_below_min_height():
-    env = _VelEnv(z=[0.02], vz=[-0.3])
-    out = com_downward_velocity(env, min_height=0.05)
-    assert float(out[0]) == 0.0
-
-
-def test_com_downward_velocity_zero_for_rising():
-    env = _VelEnv(z=[0.10], vz=[0.3])
-    out = com_downward_velocity(env, min_height=0.05)
-    assert float(out[0]) == 0.0
-```
-
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `docker exec microduck bash -c "cd /w && uv run --with pytest pytest tests/test_mdp_splits.py -v"`
 Expected: FAIL with `ImportError: cannot import name 'roll_split'`
 
-- [ ] **Step 3: Implement the three functions in `mdp.py`**
+- [ ] **Step 3: Implement the two functions in `mdp.py`**
 
 Insert immediately after `com_upward_velocity` (before `fallen_too_long`, ~line 934):
 
 ```python
-def com_downward_velocity(
-    env: ManagerBasedRlEnv,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-    min_height: float = 0.0,
-    max_vz: float | None = None,
-) -> torch.Tensor:
-    """Reward downward CoM velocity while above `min_height` — the descent
-    mirror of `com_upward_velocity`. Any lowering attempt pays immediately
-    instead of only at the destination (same jackpot-avoidance reasoning);
-    gated off once at/below the target so the policy can't farm it by
-    bobbing just above the floor.
-    """
-    asset: Entity = env.scene[asset_cfg.name]
-    com_z = torch.nan_to_num(
-        asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0
-    )
-    vz = torch.nan_to_num(asset.data.root_link_lin_vel_w[:, 2], nan=0.0)
-    above_min = (com_z > min_height).float()
-    descending = torch.clamp(-vz, min=0.0, max=max_vz)
-    return descending * above_min
-
-
 def roll_split(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
@@ -445,12 +380,14 @@ def pitch_split(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     std: float = 0.15,
 ) -> torch.Tensor:
-    """Gaussian on forward/back gravity-projection against a MEASURED target.
+    """Gaussian on forward/back gravity-projection against a target.
 
     Unlike standup's upright_linear/upright_sharp (target = perfectly
     vertical), a front split plausibly needs the trunk to lean fore/aft as
-    it settles — there's no arm counterweight. `target_pitch` must come from
-    the Task 1 settle-test measurement, not a guess (spec §3.3).
+    it settles — there's no arm counterweight. `target_pitch` = SPLIT_PITCH_TARGET
+    (currently 0 -- a DESIGN DEFAULT, not a measurement: Task 1 went
+    kinematic, which can't reveal a natural dynamic lean since that only
+    exists once an active policy is holding the pose; see spec §2/§3.3).
     """
     asset: Entity = env.scene[asset_cfg.name]
     pitch_proxy = asset.data.projected_gravity_b[:, 0]
@@ -460,13 +397,13 @@ def pitch_split(
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `docker exec microduck bash -c "cd /w && uv run --with pytest pytest tests/test_mdp_splits.py -v"`
-Expected: PASS (7 tests)
+Expected: PASS (4 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/mjlab_microduck/tasks/mdp.py tests/test_mdp_splits.py
-git commit -m "feat: add roll_split/pitch_split/com_downward_velocity reward functions"
+git commit -m "feat: add roll_split/pitch_split reward functions"
 ```
 
 ---
@@ -1205,8 +1142,9 @@ git commit -m "feat: add splits env cfg skeleton (reset/termination/observations
 
 **Interfaces:**
 - Consumes: `microduck_mdp.pose_target_match`, `pose_l1_penalty`, `height_target_gaussian`,
-  `height_l1_penalty`, `roll_split`, `pitch_split`, `com_downward_velocity`,
-  `trunk_vertical_accel_penalty`, `body_ang_vel_at_height` (Task 2/3 + existing mdp.py).
+  `height_l1_penalty`, `roll_split`, `pitch_split`, `trunk_vertical_accel_penalty`,
+  `trunk_downward_velocity_penalty`, `body_ang_vel_at_height` (Task 2 + existing
+  mdp.py — `trunk_downward_velocity_penalty` reused as-is, no new code).
   `mdp.self_collision_cost`, `mdp.action_rate_l2` (`mjlab.tasks.velocity.mdp`).
 
 - [ ] **Step 1: Update `SPLIT_Z`, `SPLIT_JOINT_OVERRIDES`, `SPLIT_PITCH_TARGET` with the real measured values**
@@ -1354,12 +1292,16 @@ Insert after the observations block and before the terminations block in
         },
     )
 
-    cfg.rewards["com_downward_velocity"] = RewardTermCfg(
-        func=microduck_mdp.com_downward_velocity,
-        weight=0.75,
+    # Speed cap, not a bootstrap reward (com_downward_velocity was dropped,
+    # spec §3.4 REVISED note) — existing function, reused as-is. Weight
+    # starts at 0, ramped in by curriculum (Task 6) only after descent is
+    # discovered, same discovery-vs-polish timing as settle_damping below.
+    cfg.rewards["descent_speed_cap"] = RewardTermCfg(
+        func=microduck_mdp.trunk_downward_velocity_penalty,
+        weight=0.0,
         params={
+            "max_down_vel": 0.15,
             "asset_cfg": SceneEntityCfg("robot", body_names=("trunk_base",)),
-            "min_height": SPLIT_Z + 0.005,
         },
     )
     # POSITIVE weight — trunk_vertical_accel_penalty already returns -|a_z|
@@ -1450,11 +1392,20 @@ def test_split_depth_curriculum_ramps_to_full_target():
 
 def test_discovery_vs_polish_staging_starts_at_zero():
     cfg = make_microduck_splits_env_cfg()
-    for name in ("settle_damping_weight", "torque_rate_weight"):
+    for name in ("settle_damping_weight", "torque_rate_weight", "descent_speed_cap_weight"):
         assert name in cfg.curriculum
         first_stage = cfg.curriculum[name].params["weight_stages"][0]
         assert first_stage["step"] == 0
         assert first_stage["weight"] == 0.0
+
+def test_descent_speed_cap_ramps_to_a_positive_weight():
+    # descent_speed_cap wraps trunk_downward_velocity_penalty, which returns
+    # -clamp(..., min=0.0) -- ALWAYS <= 0, self-negating. A negative final
+    # weight here would double-negate it into a reward for violent drops
+    # (the exact "bit four envs" bug class) -- this locks the sign in.
+    cfg = make_microduck_splits_env_cfg()
+    stages = cfg.curriculum["descent_speed_cap_weight"].params["weight_stages"]
+    assert stages[-1]["weight"] > 0
 
 def test_action_rate_curriculum_ramps_like_standup():
     cfg = make_microduck_splits_env_cfg()
@@ -1522,6 +1473,22 @@ Expected: FAIL — `KeyError: 'split_depth'`
             "weight_stages": [
                 {"step": 0,          "weight": 0.0},
                 {"step": 2000 * 24,  "weight": -1e-3},
+            ],
+        },
+    )
+    # trunk_downward_velocity_penalty returns `-clamp(..., min=0.0)` --
+    # ALWAYS <= 0, i.e. self-negating (same class as pose_l1_penalty /
+    # height_l1_penalty). Per AGENTS.md's sign rule this needs a POSITIVE
+    # weight -- a negative weight here would double-negate it into a
+    # REWARD for fast, violent drops. (Caught on paper while writing this
+    # plan: the first draft had -2.0 here, exactly backwards.)
+    cfg.curriculum["descent_speed_cap_weight"] = CurriculumTermCfg(
+        func=microduck_mdp.reward_weight,
+        params={
+            "reward_name": "descent_speed_cap",
+            "weight_stages": [
+                {"step": 0,          "weight": 0.0},
+                {"step": 2000 * 24,  "weight": 2.0},
             ],
         },
     )
@@ -1732,15 +1699,17 @@ new commit and re-run this task rather than proceeding to a real run.
   §3.4 (motion quality) → Task 2 + Task 5. §3.5 (regularizers) → Task 5.
   §3.6 (head) → Task 5. §4 (termination) → Task 4. §5 (curricula) → Task 3 + Task 6.
   §6 (testing) → every task's own test file, plus Task 8. §7 open questions are
-  explicitly left as starting points with documented reasoning (`com_downward_velocity`'s
-  gate, push-ramp timing, no `splits_composite` in v1) — not gaps, deliberate v1 scope.
-- **Placeholder scan:** Task 4's `SPLIT_Z`/`SPLIT_JOINT_OVERRIDES`/`SPLIT_PITCH_TARGET`
-  are explicitly flagged as intermediate values overwritten by Task 5 using Task 1's
-  real measurement output — not a generic TODO, a concrete cross-task data
-  dependency inherent to empirical robotics work (same shape as AGENTS.md's own
-  `STAND_Z` precedent).
+  explicitly left as starting points with documented reasoning (push-ramp timing, no
+  `splits_composite` in v1, `SPLIT_PITCH_TARGET`'s design-default status) — not gaps,
+  deliberate v1 scope.
+- **Placeholder scan:** none remaining — `SPLIT_Z`/`SPLIT_JOINT_OVERRIDES` were
+  resolved by Task 1's actual measurement (75° hip_pitch, z=0.098) before Task 5 was
+  written; `SPLIT_PITCH_TARGET=0` is an explicit design default, not a TODO.
 - **Type consistency:** `pose_target_depth_curriculum`'s `reward_names`/`joint_indices`/
   `full_targets` signature (Task 3) matches exactly how Task 6 calls it. `roll_split`/
-  `pitch_split`/`com_downward_velocity` signatures (Task 2) match their usage in
-  Task 5's `RewardTermCfg.params`. `gravity_proxy_out_of_band` (Task 4) matches its
-  two termination-cfg call sites.
+  `pitch_split` signatures (Task 2) match their usage in Task 5's `RewardTermCfg.params`.
+  `trunk_downward_velocity_penalty` (existing function) is used with a POSITIVE
+  final-stage weight (Task 6), matching its self-negating return value — this was
+  caught and fixed during plan-writing, not left for the implementation/review loop
+  to find. `gravity_proxy_out_of_band` (Task 4) matches its two termination-cfg call
+  sites.
