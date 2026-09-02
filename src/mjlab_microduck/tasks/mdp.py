@@ -933,6 +933,47 @@ def com_upward_velocity(
     return reward
 
 
+def roll_split(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    std: float = 0.45,
+) -> torch.Tensor:
+    """Gaussian on lateral (roll) gravity-projection, target zero.
+
+    Splits is a sagittal-plane trick — roll is the "tipped over sideways"
+    failure axis, not a natural part of the motion. `std` is DELIBERATELY
+    generous (0.45, in the same gravity_b-projection units as the `crouch`
+    forward-lean proxy elsewhere in this file, NOT radians) so a mild sway
+    barely costs anything — explicit design direction: "so long as it does
+    not fall, tipping side to side a little is fine."
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    roll_proxy = asset.data.projected_gravity_b[:, 1]
+    return torch.exp(-((roll_proxy / std) ** 2))
+
+
+def pitch_split(
+    env: ManagerBasedRlEnv,
+    target_pitch: float,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    std: float = 0.15,
+) -> torch.Tensor:
+    """Gaussian on forward/back gravity-projection against `target_pitch`.
+
+    Unlike standup's upright_linear/upright_sharp (target = perfectly
+    vertical), a front split may need the trunk to lean fore/aft as it
+    settles — there's no arm counterweight. `target_pitch` is a DESIGN
+    DEFAULT (currently 0, i.e. vertical) rather than a measured natural
+    lean: the settle-test measurement for this task went kinematic
+    (gravity off, base pinned upright), which can't reveal a dynamic
+    equilibrium — that only exists once an active policy is holding the
+    pose. Revisit once real training shows what pitch the robot wants.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    pitch_proxy = asset.data.projected_gravity_b[:, 0]
+    return torch.exp(-(((pitch_proxy - target_pitch) / std) ** 2))
+
+
 def fallen_too_long(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,

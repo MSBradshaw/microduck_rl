@@ -157,13 +157,23 @@ combined angle:
   **positive** weight (the function already returns `-|a_z|` — a negative weight
   here double-negates into a reward for the shock, the exact "bit four envs" sign
   bug AGENTS.md calls out). Global, not phase-gated, same as standup's `gentle_rise`.
-- **`com_downward_velocity`** — mirror of standup's `com_upward_velocity`: rewards
-  descending CoM velocity so any lowering attempt pays immediately instead of only
-  at the destination (jackpot-avoidance — a pure destination reward lets the policy
-  camp standing, which is a stable, high-scoring local optimum on every other term).
-  Gate: TBD whether active for the whole descent or only once already fairly low
-  (open question, not yet decided — try whole-descent first, tighten if the policy
-  learns to farm a fast initial drop).
+- **No velocity-bootstrap reward (REVISED — dropped during implementation).**
+  Originally planned as `com_downward_velocity`, a mirror of standup's
+  `com_upward_velocity` (rewards the act of moving toward the target, not just
+  arriving, so a cold-start policy has something pulling it off "just stand
+  there"). Standup needs that because rising from prone is a genuinely hard,
+  discontinuous discovery problem. Splits' descent is much closer to "sit
+  down" — a single continuous direction from a standing start — and
+  `pose_split_l1`/`height_split_l1` already supply a dense L1 gradient toward
+  the target from anywhere, including standing. YAGNI: don't add the bootstrap
+  unless training actually shows a cold-start problem.
+- **`trunk_downward_velocity_penalty`** (existing function, reused as-is —
+  no new code) — caps descent SPEED past `max_down_vel`, zero for slower
+  descents and all upward motion. This is the anti-violence regularizer that
+  fills the role the dropped bootstrap reward would have shared: introduced
+  LATE by curriculum (weight 0 until the descent skill exists), same
+  discovery-vs-polish timing as `settle_damping` below — an attempt-tax active
+  during discovery would make "stay standing" the optimum.
 - **settle-damping** (standup's `arrival_damping` equivalent) — angular-velocity
   penalty gated on height/tilt near the target, **starts at weight 0**, ramped in
   by curriculum only after descent is discovered (§4).
