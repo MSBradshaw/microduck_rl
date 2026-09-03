@@ -59,19 +59,19 @@ EPISODE_LENGTH_S = 6.0
 STAND_Z = 0.115
 
 # ── Split target — FROM Task 1's measure_split_pose.py output, NOT guessed ────
-# TODO(Task 5): replace with the real values recorded in Task 1 Step 6.
-SPLIT_Z = 0.115  # placeholder until Task 5 fills in the measured value
+# 75 deg hip_pitch, both legs (SAME numeric sign -- HOME already has
+# left_hip_pitch/right_hip_pitch mirrored at -0.4579/+0.4579, so same-sign
+# overrides pull the legs apart, not together; see docs/superpowers/specs/
+# 2026-09-01-microduck-splits-design.md §2). Knee/ankle left at HOME --
+# not tuned for flatter foot contact yet, a later refinement.
+SPLIT_Z = 0.098
 SPLIT_JOINT_OVERRIDES = {
-    # left leg forward
-    2:  0.0,   # left_hip_pitch
-    3:  0.0,   # left_knee
-    4:  0.0,   # left_ankle
-    # right leg back
-    11: 0.0,   # right_hip_pitch
-    12: 0.0,   # right_knee
-    13: 0.0,   # right_ankle
+    2:  -1.309,   # left_hip_pitch  (-75 deg)
+    11: -1.309,   # right_hip_pitch (-75 deg, same sign as left -- see above)
 }
-SPLIT_PITCH_TARGET = 0.0  # projected_gravity_b[:,0] proxy, from Task 1
+SPLIT_PITCH_TARGET = 0.0  # design default, not measured -- kinematic method
+# can't reveal a natural dynamic lean (needs an active policy holding the
+# pose). Revisit once real training telemetry exists.
 
 _LEG_JOINTS  = [0, 1, 2, 3, 4, 9, 10, 11, 12, 13]
 _NECK_JOINTS = [5, 6, 7, 8]
@@ -258,6 +258,133 @@ def make_microduck_splits_env_cfg(
     command.ranges.lin_vel_y = (-0.01, 0.01)
     command.ranges.ang_vel_z = (-0.05, 0.05)
     cfg.commands["twist"] = microduck_mdp.VelocityCommandCommandOnlyCfg(**vars(command))
+
+    # ── Rewards: front-split target, descent+hold ──────────────────────────
+    # Weights mirror standup's ÷4-rescaled ratios (AGENTS.md: compare reward
+    # MASS not absolute weight when copying regularizers between envs — this
+    # task's structure is architecturally identical to standup's, just a
+    # different geometric target, so the same task/regularizer mass ratio
+    # applies as a starting point). Expect the usual whack-a-mole tuning pass.
+    cfg.rewards["pose_split"] = RewardTermCfg(
+        func=microduck_mdp.pose_target_match,
+        weight=2.0,
+        params={"std": 0.5, "joint_indices": _LEG_JOINTS, "target_overrides": SPLIT_JOINT_OVERRIDES},
+    )
+    cfg.rewards["pose_split_l1"] = RewardTermCfg(
+        func=microduck_mdp.pose_l1_penalty,
+        weight=1.25,
+        params={"joint_indices": _LEG_JOINTS, "target_overrides": SPLIT_JOINT_OVERRIDES},
+    )
+
+    cfg.rewards["height_split"] = RewardTermCfg(
+        func=microduck_mdp.height_target_gaussian,
+        weight=1.0,
+        params={
+            "std": 0.04,
+            "target_height": SPLIT_Z,
+            "asset_cfg": SceneEntityCfg("robot", body_names=("trunk_base",)),
+        },
+    )
+    cfg.rewards["height_split_sharp"] = RewardTermCfg(
+        func=microduck_mdp.height_target_gaussian,
+        weight=1.0,
+        params={
+            "std": 0.015,
+            "target_height": SPLIT_Z,
+            "asset_cfg": SceneEntityCfg("robot", body_names=("trunk_base",)),
+        },
+    )
+    cfg.rewards["height_split_l1"] = RewardTermCfg(
+        func=microduck_mdp.height_l1_penalty,
+        weight=7.5,
+        params={
+            "target_height": SPLIT_Z,
+            "asset_cfg": SceneEntityCfg("robot", body_names=("trunk_base",)),
+        },
+    )
+
+    # Roll: generous std (0.45) — mild sideways sway is fine, per explicit
+    # design direction. Pitch: tighter (0.15), tracks the MEASURED natural
+    # resting pitch, not vertical.
+    cfg.rewards["roll_split"] = RewardTermCfg(
+        func=microduck_mdp.roll_split,
+        weight=0.75,
+        params={"std": 0.45, "asset_cfg": SceneEntityCfg("robot", body_names=("trunk_base",))},
+    )
+    cfg.rewards["pitch_split"] = RewardTermCfg(
+        func=microduck_mdp.pitch_split,
+        weight=1.5,
+        params={
+            "target_pitch": SPLIT_PITCH_TARGET,
+            "std": 0.15,
+            "asset_cfg": SceneEntityCfg("robot", body_names=("trunk_base",)),
+        },
+    )
+
+    # Speed cap, not a bootstrap reward (com_downward_velocity was dropped,
+    # spec §3.4 REVISED note) — existing function, reused as-is. Weight
+    # starts at 0, ramped in by curriculum (Task 6) only after descent is
+    # discovered, same discovery-vs-polish timing as settle_damping below.
+    cfg.rewards["descent_speed_cap"] = RewardTermCfg(
+        func=microduck_mdp.trunk_downward_velocity_penalty,
+        weight=0.0,
+        params={
+            "max_down_vel": 0.15,
+            "asset_cfg": SceneEntityCfg("robot", body_names=("trunk_base",)),
+        },
+    )
+    # POSITIVE weight — trunk_vertical_accel_penalty already returns -|a_z|
+    # (the "bit four envs" sign bug: a negative weight here would double-
+    # negate into a reward for hard impacts).
+    cfg.rewards["gentle_descent"] = RewardTermCfg(
+        func=microduck_mdp.trunk_vertical_accel_penalty,
+        weight=0.005,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=("trunk_base",))},
+    )
+
+    # Settle-damping (standup's arrival_damping equivalent) — starts at 0,
+    # ramped in by curriculum (Task 6) only after descent is discovered.
+    cfg.rewards["settle_damping"] = RewardTermCfg(
+        func=microduck_mdp.body_ang_vel_at_height,
+        weight=0.0,
+        params={
+            "height_low": SPLIT_Z,
+            "height_high": SPLIT_Z + 0.02,
+            "tilt_full_deg": 20.0,
+            "tilt_zero_deg": 45.0,
+            "asset_cfg": SceneEntityCfg("robot", body_names=("trunk_base",)),
+        },
+    )
+
+    # Head — HOME-tracking only for v1 (spec §3.6): kept alive for obs-slot
+    # parity, lightly weighted.
+    cfg.rewards["head_pose_tracking"] = RewardTermCfg(
+        func=microduck_mdp.head_pose_tracking,
+        weight=0.75,
+        params={"command_name": "head_pose", "std": 0.5},
+    )
+
+    # ── Sim2real regularisers (standup's set) ──────────────────────────────
+    cfg.rewards["action_rate_l2"] = RewardTermCfg(func=mdp.action_rate_l2, weight=-0.1)
+    cfg.rewards["joint_torque_rate_l2"] = RewardTermCfg(
+        func=microduck_mdp.joint_torque_rate_l2, weight=0.0
+    )
+    cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("trunk_base",)
+    cfg.rewards["body_ang_vel"].weight = -0.05
+    cfg.rewards["angular_momentum"].weight = -0.02
+    cfg.rewards.pop("soft_landing", None)
+    # No limit-proximity penalty on the split-leg joints (design spec §3.1):
+    # the goal legitimately sits near the hip_pitch range limit, so a stock
+    # last-7.5%-of-range penalty would directly fight pose_split at the exact
+    # point the policy needs to reach. A margin to the true mechanical max
+    # (measured in Task 1) does the safety job instead.
+    cfg.rewards.pop("dof_pos_limits", None)
+
+    cfg.rewards["self_collisions"] = RewardTermCfg(
+        func=mdp.self_collision_cost,
+        weight=-1.0,
+        params={"sensor_name": self_collision_cfg.name},
+    )
 
     # ── Terminations ────────────────────────────────────────────────────────
     if "fell_over" in cfg.terminations:
