@@ -9,7 +9,13 @@ natively.
 
 - **Repo:** `~/microduck_rl` (clone of
   [pollen-robotics/microduck_rl](https://github.com/pollen-robotics/microduck_rl)),
-  bind-mounted into the containers at `/w`.
+  bind-mounted into the containers at `/w`. Two remotes: `origin`
+  (pollen-robotics, upstream) and `fork`
+  ([MSBradshaw/microduck_rl](https://github.com/MSBradshaw/microduck_rl),
+  personal). All active work happens on `develop`; `main` on the fork is kept
+  fast-forwarded to `develop` (`git push fork develop:main`) so a fresh clone
+  of the fork's default branch has everything without needing to know to
+  check out `develop`.
 - **Containers:** `microduck` (port 8080) and `microduck2` (port 8081) —
   persistent, `python:3.12-slim` + git/osmesa/uv installed on top. Reuse them
   rather than recreating, since git/osmesa need reinstalling on a fresh
@@ -67,14 +73,34 @@ ever need to change what's preinstalled.
 
 ## Training a new run
 
+With a wandb API key set up (see "Setting up wandb" below), just omit
+`--no-wandb` and `--agent.logger` — the RL cfg's own default (`wandb`) takes
+over and `--hf-jobs` forwards the key as a job secret automatically:
+
 ```bash
 docker exec microduck bash -c "
   cd /w && OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 uv run python -m mjlab_microduck.train_cli Mjlab-Velocity-Flat-MicroDuck \
     --env.scene.num-envs 4096 --agent.max_iterations 4000 \
-    --agent.logger tensorboard --hf-jobs --flavor l4x1 \
-    --namespace mikeybrad --no-wandb --run-name <new-run-name> --timeout 12h --detach
+    --hf-jobs --flavor l4x1 \
+    --namespace mikeybrad --run-name <new-run-name> --timeout 12h --detach
 "
 ```
+
+No wandb key yet, or deliberately skipping it for a run? Add back
+`--agent.logger tensorboard --no-wandb` (both flags together — `tensorboard`
+alone still lets `hf_jobs.py` try to forward a key if one happens to be
+findable; `--no-wandb` is what actually suppresses that).
+
+**Sanity-check `--agent.max_iterations` before submitting** — it's real
+money. Every task's `Rl...Cfg` ships its own default, but that default isn't
+always right for the specific cfg: `microduck_splits_cycle`'s was copied from
+`sitstand` (15,000) without checking that every one of *this* cfg's
+curriculum stages actually finishes by iteration 2500 — the other 12,500
+would have bought nothing. Skim the cfg's `curriculum[...]["weight_stages"]`/
+`"range_stages"`/`"push_stages"` step boundaries (steps = `iteration × 24`)
+and pick a budget that clears the last one with reasonable headroom, per
+AGENTS.md's rule of thumb (simple tricks ≈1000 iters, gaits/curriculum-heavy
+recovery 4000–6000) — don't just reuse another task's number.
 
 Note: `--hf-jobs` runs the actual training on Hugging Face's GPUs, so
 `OMP_NUM_THREADS`/`MKL_NUM_THREADS` here only cap the *local* container
@@ -104,6 +130,30 @@ print(job.status)
 \""
 ```
 
+## Setting up wandb
+
+One-time, per container (its `~/.netrc` lives in the writable layer, not one
+of the named volumes — survives `docker stop`/`start` but not a full
+recreate, same as the git/osmesa install):
+
+1. Get an API key from wandb.ai (Settings → API keys); sign up free first if
+   you don't have an account.
+2. `docker exec -it microduck bash -c "uv run wandb login"`, paste the key.
+   (`export WANDB_API_KEY=...` in the container works too —
+   `hf_jobs.py`'s `_wandb_api_key()` checks the env var first, then
+   `~/.netrc`, which is what `wandb login` writes.)
+
+Every task's `RslRlOnPolicyRunnerCfg` already sets `wandb_project =
+"mjlab_microduck"`; wandb logs it under whatever account/entity the API key
+belongs to — on a personal key that's your own username, e.g.
+`<you>/mjlab_microduck`, not `pollen-robotics/mjlab_microduck`.
+
+**Heads up:** `scripts/wandb_utils.py` hardcodes `WANDB_PROJECT =
+"pollen-robotics/mjlab_microduck"` for `play_latest.py`'s "find my latest
+run" lookup. Runs logged under your own account won't be found by that
+helper until it's pointed at your entity — not yet fixed, hit it if/when
+`play_latest.py` comes up empty.
+
 ## Local smoke test (always run before submitting a real HF Jobs run)
 
 `AGENTS.md` requires a 5-iteration/64-env smoke test before any real launch.
@@ -132,23 +182,64 @@ Two flags that are easy to get wrong here, both discovered the hard way
 
 ## Finding the best checkpoint (don't assume it's the last one)
 
-Reward isn't guaranteed to improve monotonically. Pull the job logs and
-parse `Mean reward:` lines per `Learning iteration N/M` to find the actual
-peak before picking a checkpoint — see the method in
-`run1-2026-09-01/README.md`. Checkpoints save every `save_interval`
-iterations (250, in `config/agent.yaml`).
+Reward isn't guaranteed to improve monotonically. As of 2026-09-03,
+`MicroduckOnPolicyRunner` (`src/mjlab_microduck/tasks/__init__.py`) tracks
+this automatically: every time a checkpoint is saved (every `save_interval`
+iterations, 250 by default) whose mean reward beats every checkpoint saved
+before it, it's copied to a canonical `model_best.pt` right next to the
+numbered ones. It matches the uploader's `model_*.pt` glob, so it syncs to
+the HF model repo like any other checkpoint — no more grepping job logs and
+hoping the peak iteration happened to be one that was saved (the
+`splits-run1-2026-09-03` problem this fixes). Sanity-check which iteration
+it actually is:
+
+```bash
+docker exec microduck bash -c "cd /w && uv run python -c \"
+import torch
+d = torch.load('<path>/model_best.pt', weights_only=False, map_location='cpu')
+print('iter:', d['iter'])
+\""
+```
+
+This is coarser than the TRUE best iteration — it can only ever point at a
+checkpoint that was actually saved, same granularity every other checkpoint
+already has — but it's a free upgrade over "assume it's the last one." Cross-
+reference `reward_history.csv` (see below) for the exact numbers at that
+iteration and neighboring ones if you want to double-check nothing better was
+one save_interval away.
+
+**Runs from before 2026-09-03 don't have this** — for those, pull the job
+logs and parse `Mean reward:` lines per `Learning iteration N/M` to find the
+actual peak before picking a checkpoint — see the method in
+`run1-2026-09-01/README.md`.
 
 ## Per-run diagnostics: save the per-term reward log, not just checkpoints
 
-`--agent.logger tensorboard` only writes tfevents into the HF Job's
-*ephemeral* container filesystem — `scripts/hf/uploader.py` only watches and
-pushes `model_*.pt` files (see its `CKPT_ROOT`/`logs/rsl_rl` glob), so **the
-per-term reward breakdown (`Episode_Reward/<term>` per iteration) is never
-saved anywhere durable by default.** It only exists as scrollback in the
-job's log stream. This bit us investigating run1: the aggregate reward curve
-alone couldn't tell us whether a mid-training dip was a real walking
-regression or just a curriculum-weight artifact — we needed the per-term
-numbers, and had to reconstruct them from raw job logs after the fact.
+**Fixed as of 2026-09-03** — `MicroduckOnPolicyRunner` now writes a plain
+`reward_history.csv` next to the checkpoints on every `save()` (one row per
+`save_interval`, every `Episode_Reward/<term>` / `Curriculum/<term>` mean
+included, not just the aggregate), and `scripts/hf/uploader.py` syncs it to
+the HF model repo like any other file — durable regardless of logger backend
+or job retention. `*.csv` is gitignored (training-run output, never source),
+so this never gets checked in; pull it down like a checkpoint:
+
+```bash
+docker exec microduck bash -c "cd /w && uv run python -c \"
+from huggingface_hub import hf_hub_download
+hf_hub_download(repo_id='mikeybrad/<run-name>', filename='<task>/<timestamped-dir>/reward_history.csv', local_dir='.')
+\""
+```
+
+**Why this exists:** `--agent.logger tensorboard` only writes tfevents into
+the HF Job's *ephemeral* container filesystem, and (before this fix)
+`scripts/hf/uploader.py` only watched `model_*.pt` files, so the per-term
+reward breakdown was never saved anywhere durable — it only existed as
+scrollback in the job's log stream. This bit us investigating run1: the
+aggregate reward curve alone couldn't tell us whether a mid-training dip was
+a real walking regression or just a curriculum-weight artifact — we needed
+the per-term numbers, and had to reconstruct them from raw job logs after
+the fact (the method below still works, and is the only option for runs
+before this fix).
 
 **While the job record still exists on HF** (retention past completion is
 unknown — don't assume it's forever), you can pull the full log and parse
@@ -294,3 +385,55 @@ Or just stop the whole container if you're done for a while:
 `docker stop microduck` (keeps it around for next time — `docker rm` if you
 actually want to tear it down, but then you lose the installed
 git/osmesa/uv and have to redo that setup step).
+
+## Pushing your work (personal fork)
+
+`origin` (pollen-robotics) and `fork` (yours) are separate remotes — regular
+pushes go to `fork`, not `origin`:
+
+```bash
+git push fork develop           # your active branch
+git push fork develop:main      # keep the fork's default branch in sync too
+```
+
+`fork`'s `main` mirrors upstream `pollen-robotics/microduck_rl`'s `main` at
+the moment the fork was created, which (2026-09-03) turned out to be a
+strict ancestor of `develop` — so `develop:main` is always a plain
+fast-forward, never a merge. If `origin` ever moves in a way that stops being
+true, `git merge-base --is-ancestor <fork main sha> develop` will say so
+before you push.
+
+To pull this down on a different machine:
+
+```bash
+git clone https://github.com/MSBradshaw/microduck_rl.git
+cd microduck_rl
+git checkout develop   # main and develop are equivalent as of 2026-09-03
+```
+
+## What's been trained so far (running log)
+
+- **2026-09-01, `Mjlab-Velocity-Flat-MicroDuck` run1** — walking policy,
+  best checkpoint `model_1500_best.pt` (peak reward was mid-run, not final —
+  see "Finding the best checkpoint"). Full writeup:
+  `~/microduck-results/run1-2026-09-01/README.md`.
+- **2026-09-03, `Mjlab-Velocity-Flat-MicroDuck` run2 (heading fix)** — fixed
+  `rel_heading_envs: 0.0 → 0.3` (mjlab's own upstream default was disabled,
+  so no env ever trained heading-drift correction; see
+  `microduck_velocity_env_cfg.py`'s commit for the full diagnosis). Job
+  `6a98f15321c5aa7c8364f643`, not yet evaluated.
+- **2026-09-03, `Mjlab-Splits-Flat-MicroDuck` (v1)** — episodic front-split
+  descend-and-hold. Reaches the split once and stops; no return-to-stand.
+  Registered, smoke-tested, HF Jobs submission was blocked for a while on
+  missing HF auth in the container (`hf auth login` fixed it).
+- **2026-09-03, `Mjlab-SplitsCycle-Flat-MicroDuck` (splits v2)** — v1's
+  sequel: commands the robot to keep alternating split → stand → split → ...
+  for the whole episode (`AlternatingPostureCommand` in `mdp.py`, a
+  deterministic-flip variant of `sitstand`'s posture command), instead of
+  reaching the target once and stopping. Reuses `sitstand`'s posture-
+  conditioned reward stack pointed at the measured split target, keeps v1's
+  orientation shaping and tip-band terminations. Smoke-tested clean. Submitted
+  as job `6a99f478259f8e97255dbd41` (`splits-cycle-run1-2026-09-03`,
+  6000 iters, 4096 envs, `l4x1`) — first run trained with wandb logging
+  enabled (see "Setting up wandb"), checkpoints at
+  `mikeybrad/splits-cycle-run1-2026-09-03`. Not yet evaluated.
