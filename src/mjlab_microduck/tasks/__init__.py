@@ -67,6 +67,10 @@ from .microduck_roulade_env_cfg import (
     make_microduck_roulade_env_cfg,
     MicroduckRouladeRlCfg,
 )
+from .microduck_splits_env_cfg import (
+    make_microduck_splits_env_cfg,
+    MicroduckSplitsRlCfg,
+)
 from .backlash import make_backlash_variant
 
 # Standard velocity task
@@ -117,6 +121,23 @@ register_mjlab_task(
     env_cfg=make_microduck_standup_env_cfg(rough=True),
     play_env_cfg=make_microduck_standup_env_cfg(play=True, rough=True),
     rl_cfg=MicroduckStandUpRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Splits — episodic front-split descend-and-hold
+register_mjlab_task(
+    task_id="Mjlab-Splits-Flat-MicroDuck",
+    env_cfg=make_microduck_splits_env_cfg(),
+    play_env_cfg=make_microduck_splits_env_cfg(play=True),
+    rl_cfg=MicroduckSplitsRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-Splits-Rough-MicroDuck",
+    env_cfg=make_microduck_splits_env_cfg(rough=True),
+    play_env_cfg=make_microduck_splits_env_cfg(play=True, rough=True),
+    rl_cfg=MicroduckSplitsRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 
@@ -259,6 +280,7 @@ _BACKLASH_TASKS = (
     ("Mjlab-Velocity-Swizzle-Backlash-MicroDuck", make_microduck_velocity_swizzle_env_cfg, {}, MicroduckSwizzleRlCfg, _BL_ROLLERS),
     ("Mjlab-RollerCrouch-Flat-Backlash-MicroDuck", make_microduck_roller_crouch_env_cfg, {}, MicroduckRollerCrouchRlCfg, _BL_ROLLERS),
     ("Mjlab-RollerSlope-Flat-Backlash-MicroDuck", make_microduck_roller_slope_env_cfg, {}, MicroduckRollerSlopeRlCfg, _BL_ROLLERS),
+    ("Mjlab-Splits-Flat-Backlash-MicroDuck", make_microduck_splits_env_cfg, {}, MicroduckSplitsRlCfg, _BL_ALLCOL),
 )
 for _task_id, _make_cfg, _kw, _rl_cfg, _robot_cfg in _BACKLASH_TASKS:
     register_mjlab_task(

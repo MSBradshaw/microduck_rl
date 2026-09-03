@@ -160,3 +160,10 @@ def test_push_curriculum_ramps_from_zero():
 def test_task_registered_with_correct_experiment_name():
     from mjlab_microduck.tasks.microduck_splits_env_cfg import MicroduckSplitsRlCfg
     assert MicroduckSplitsRlCfg.experiment_name == "microduck_splits"
+
+
+def test_task_is_registered():
+    from mjlab.tasks.registry import list_tasks
+    import mjlab_microduck.tasks  # noqa: F401 (import triggers registration)
+    assert "Mjlab-Splits-Flat-MicroDuck" in list_tasks()
+    assert "Mjlab-Splits-Flat-Backlash-MicroDuck" in list_tasks()
