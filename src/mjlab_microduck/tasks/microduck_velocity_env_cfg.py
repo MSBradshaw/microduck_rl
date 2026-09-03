@@ -640,7 +640,18 @@ def make_microduck_velocity_env_cfg(
     command: UniformVelocityCommandCfg = deepcopy(cfg.commands["twist"])
     cfg.commands["twist"] = command
     command.rel_standing_envs = 0.02  # small but non-zero from the start, ramped up by curriculum
-    command.rel_heading_envs = 0.0
+    # Heading-hold envs (2026-09-02 experiment, see run2-heading-hold README in
+    # microduck-results): was 0.0, which meant NO env ever trained "correct back
+    # toward a reference heading" — every env got a raw, memoryless ang_vel_z
+    # rate target, and the reward only checks per-step rate error, not
+    # accumulated heading drift. Headless-verified the resulting gap: forcing
+    # ang_vel_z=0 for a full 5s rollout still let heading wander ~30-40 degrees
+    # with instantaneous ang_vel spikes to +-1.2 rad/s, because nothing ever
+    # rewarded correcting it. mjlab's own reference velocity task ships this at
+    # 0.3 with heading_control_stiffness=0.5 (both inherited, untouched, from
+    # the deepcopy above) — restoring the upstream default rather than
+    # inventing new values.
+    command.rel_heading_envs = 0.3
     # Modest, FIXED command ranges (no widening curriculum): a ramp to
     # lin ±0.4 / ang ±2.0 outpaced the robot's capability and tracked a
     # post-iter-1000 reward/episode-length decline. ang ±1.0 is the big
