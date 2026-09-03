@@ -29,6 +29,7 @@ rebalance that followed that null. See the budget comment beside the weights.
 """
 
 import dataclasses
+import os
 
 from pathlib import Path
 
@@ -360,6 +361,18 @@ def make_hop_variant(
     # the hop rewards pay for hopping. See _WALKING_GAIT_REWARDS above.
     for name in _WALKING_GAIT_REWARDS:
         cfg.rewards.pop(name, None)
+
+    # Optional: silence the push perturbation for VISUAL INSPECTION.
+    #
+    # play=True deliberately SHORTENS the push interval to (0.5, 1.0) s, which
+    # is right for a walking policy but not here: HOP_PERIOD is 1.0 s, so the
+    # robot gets shoved about once per hop and the natural behaviour is
+    # impossible to see. Opt in with HOP_NO_PUSH=1, and it announces itself so
+    # it cannot silently remove domain randomisation from a training run.
+    if os.environ.get("HOP_NO_PUSH"):
+        if cfg.events.pop("push_robot", None) is not None:
+            print("  [hop] HOP_NO_PUSH set -> push_robot event REMOVED "
+                  "(inspection only; do NOT train like this)")
 
     # 4. Hop rewards. All three gate internally on sin(2*pi*phase) > 0.
     cfg.rewards["hop_both_feet_airborne"] = RewardTermCfg(
