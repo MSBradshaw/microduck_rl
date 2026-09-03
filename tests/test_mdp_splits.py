@@ -7,7 +7,12 @@ objects below only need that one attribute, nothing else.
 import pytest
 import torch
 
-from mjlab_microduck.tasks.mdp import pitch_split, pose_target_depth_curriculum, roll_split
+from mjlab_microduck.tasks.mdp import (
+    gravity_proxy_out_of_band,
+    pitch_split,
+    pose_target_depth_curriculum,
+    roll_split,
+)
 
 
 class _GravityData:
@@ -128,3 +133,15 @@ def test_depth_curriculum_applies_to_every_named_reward():
     )
     for name in ("pose_split", "pose_split_l1"):
         assert terms[name].params["target_overrides"][2] == pytest.approx(0.4)
+
+
+def test_gravity_proxy_out_of_band_triggers_past_threshold():
+    env = _GravityEnv([[0.0, 0.9, -0.3]])
+    out = gravity_proxy_out_of_band(env, axis=1, target=0.0, band=0.75)
+    assert bool(out[0]) is True
+
+
+def test_gravity_proxy_out_of_band_stays_off_within_threshold():
+    env = _GravityEnv([[0.0, 0.3, -0.9]])
+    out = gravity_proxy_out_of_band(env, axis=1, target=0.0, band=0.75)
+    assert bool(out[0]) is False

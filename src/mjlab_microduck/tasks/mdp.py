@@ -1094,6 +1094,23 @@ def robot_state_is_nan(
     return bad
 
 
+def gravity_proxy_out_of_band(
+    env: ManagerBasedRlEnv,
+    axis: int,
+    target: float,
+    band: float,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Terminate when a projected_gravity_b axis strays more than `band` from
+    `target`. Generic hard backstop for roll_split/pitch_split (axis 1 / 0) —
+    the reward is soft (generous std), this is the actual fall/face-plant
+    cutoff, set wider than the reward's std by design.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    proxy = asset.data.projected_gravity_b[:, axis]
+    return torch.abs(proxy - target) > band
+
+
 def root_height_below(
     env: ManagerBasedRlEnv,
     min_height: float,
