@@ -55,6 +55,31 @@ SPRING_AXIS = (0.0, 1.0, 0.0)
 ANKLE_TO_SOLE = 0.01744
 
 H_ADD = 0.030      # measured on the Sarrus prototype (was an assumed 0.025)
+# MEASURED stiffness of the prototype boot, 2026-09-03, on the RobStride gripper
+# bench: 3344 N/m (two runs 3.6% apart, r^2 > 0.998). Method: jaw position from
+# the encoder against a scale in series with the boot -- motor torque is not in
+# the measurement, so it is immune to the rack friction and cogging that spoil
+# a torque-derived figure (that route gave 5026 N/m, r^2 0.91; discarded).
+#
+# The earlier hand figure of 3900 N/m (3 mm ~ 1500 g, 8 mm ~ 3500 g) is 17% HIGH.
+# The registered hop arms are k2500 and k3900, which bracket 3344, and the sweep
+# gave 23 mm and 27 mm of rise respectively -- so ~25-26 mm is the honest
+# expectation for the real spring. Not worth re-running for; do it when the load
+# cells land a real damping number.
+#
+# Damping was NOT measured, only bounded: c <= 12.5 N.s/m, i.e. zeta <= 0.41 vs
+# the pad / <= 0.115 vs the whole robot. DAMPING_RATIO = 0.3 below gives
+# c = 9.18 N.s/m (zeta_eff 0.12 vs the robot), which sits INSIDE that bound -- so
+# the assumption is not contradicted and is, if anything, slightly pessimistic.
+# Loss was also rate-independent (+5.5% over a 20x frequency span), so the
+# viscous term is small. The boot's own Coulomb friction is negligible: it
+# returns fully to free length, where 6.29 N in its load path would leave a
+# 1.88 mm stiction dead band.
+#
+# See rebot-lerobot/bench/RESULTS.md and
+# docs/sim2real/spring_boot_identification_spec.md.
+K_MEASURED = 3344.0
+
 PAD_MASS = 0.070   # measured (was an assumed 0.020) — 70 g per boot
 TRAVEL = 0.012     # measured (was an assumed 0.015)
 # Damping is specified as a RATIO, not an absolute rate, and derived per arm as

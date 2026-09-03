@@ -124,3 +124,38 @@ simulation wants is the **absolute damping `c` in N.s/m** — that is unambiguou
 4. The measured stiffness curve, as a check against 3900 N/m (the existing
    hand measurement is 3 mm ~ 1500 g, 8 mm ~ 3500 g).
 5. Raw logs retained — this will be repeated per spring and per revision.
+
+---
+
+## Amendment, 2026-09-03 — after the first run
+
+Results: `rebot-lerobot/bench/RESULTS.md`.
+
+**The baseline-subtraction instruction above is WRONG for a torque-derived force
+axis, and this spec caused a wasted measurement.** Rack friction scales with
+transmitted load; the empty-rig baseline carries none (0.108 N against 6.29 N
+under load). **A zero-load baseline cannot subtract a load-dependent term.** The
+6.29 N "Coulomb" figure was therefore the rack's friction, not the boot's —
+falsified by a physical check the bench operator did and this spec did not
+suggest: if that force were in the boot's load path there would be a
+`6.29/3344` = 1.88 mm stiction dead band, and the boot returns fully to its free
+length.
+
+**Consequence: force must be measured DOWNSTREAM of the transmission.** Load
+cells on the jaw remove the error rather than correcting for it. Baseline
+subtraction remains correct for *inertia* (which is load-independent), and
+bidirectional sweeping remains correct for the motor's own friction — but not
+for a load-dependent term in series with the specimen.
+
+**Bandwidth was also over-specified.** The rig rolls off with a ~6 Hz corner,
+amplitude-limited by ACCELERATION (+-3 mm at 15 Hz needs 26.6 m/s^2), not motor
+speed — peak velocity never exceeded 48 of ~155 available rpm. The 15 Hz target
+was unreachable, and points above 2 Hz are unusable because the empty and
+loaded runs reached different amplitudes. Either accept a 0.1-2 Hz sweep and
+extrapolate, or raise the acceleration authority — which is only safe once a
+load cell bounds boot force directly.
+
+**What the first run did establish:** `k` = 3344 N/m (not the 3900 hand
+figure), loss rate-INdependent to within +5.5% over 20x in frequency, and
+`c <= 12.5 N.s/m` as an upper bound. The model's assumed `c` = 9.18 N.s/m sits
+inside that bound, so it is not contradicted.
