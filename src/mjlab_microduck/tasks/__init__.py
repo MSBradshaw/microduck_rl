@@ -1,3 +1,9 @@
+import csv
+import os
+import shutil
+import statistics
+
+import torch
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 
@@ -13,6 +19,116 @@ class MicroduckOnPolicyRunner(VelocityOnPolicyRunner):
         sym = alg.get("symmetry_cfg") if isinstance(alg, dict) else None
         if isinstance(sym, dict) and "_env" in sym:
             alg["symmetry_cfg"] = {k: v for k, v in sym.items() if k != "_env"}
+
+        # rsl_rl's Logger only ever writes metrics to its writer (tensorboard/
+        # wandb) -- on an HF Jobs run with `--agent.logger tensorboard` and no
+        # W&B, that writer lives in the job's ephemeral container filesystem
+        # and is discarded when the job exits. scripts/hf/uploader.py only
+        # watches for model_*.pt, so the whole per-iteration reward history
+        # was otherwise unrecoverable once the job's log dropped out of HF's
+        # job-list retention (bit us on the splits-run1-2026-09-03 run: no
+        # way to tell which checkpoint was actually best after the fact).
+        # Fix: snapshot the per-term extras right before Logger.log() clears
+        # them, and append one row per save_interval to a plain CSV next to
+        # the checkpoints, which the uploader can then push like any other
+        # file -- durable regardless of logger backend or job retention.
+        self._reward_history_path = (
+            os.path.join(self.logger.log_dir, "reward_history.csv")
+            if self.logger.log_dir else None
+        )
+        self._last_ep_extras: list[dict] = []
+
+        # Best-checkpoint tracking (same "no way to tell which checkpoint was
+        # actually best after the fact" problem as reward_history.csv above,
+        # this time for the checkpoint file itself, not just the numbers).
+        self._best_ckpt_path = (
+            os.path.join(self.logger.log_dir, "model_best.pt")
+            if self.logger.log_dir else None
+        )
+        self._best_mean_reward = float("-inf")
+
+    def learn(self, *args, **kwargs):
+        # Logger.init_logging_writer() (which sets self.logger.writer) only
+        # runs inside the base learn() loop, not __init__ -- so the log()
+        # hook has to be installed here, right before delegating, not in
+        # __init__ (self.logger.writer doesn't exist yet there).
+        orig_log = self.logger.log
+
+        def _snapshot_then_log(*log_args, **log_kwargs):
+            self._last_ep_extras = list(self.logger.ep_extras)
+            return orig_log(*log_args, **log_kwargs)
+
+        self.logger.log = _snapshot_then_log
+        return super().learn(*args, **kwargs)
+
+    def _extras_means(self) -> dict[str, float]:
+        """Mirror rsl_rl Logger.log's own per-key averaging over ep_extras
+        (Episode_Reward/*, Curriculum/*, ...) so the CSV carries the same
+        per-term breakdown AGENTS.md's reward-design checks need, not just
+        the aggregate mean reward."""
+        means: dict[str, float] = {}
+        for key in self._last_ep_extras[0] if self._last_ep_extras else []:
+            values = torch.tensor([], device=self.device)
+            for ep_info in self._last_ep_extras:
+                if key not in ep_info:
+                    continue
+                v = ep_info[key]
+                if not isinstance(v, torch.Tensor):
+                    v = torch.tensor([v])
+                if v.dim() == 0:
+                    v = v.unsqueeze(0)
+                values = torch.cat((values, v.to(self.device)))
+            if values.numel() > 0:
+                means[key] = values.mean().item()
+        return means
+
+    def save(self, path: str, infos=None):
+        super().save(path, infos)
+        self._append_reward_history()
+        self._maybe_update_best(path)
+
+    def _maybe_update_best(self, path: str) -> None:
+        """Copy this checkpoint to a canonical `model_best.pt` whenever its
+        mean reward beats every checkpoint saved before it.
+
+        Checked at `save()`'s existing cadence (`save_interval`, plus the
+        final save) rather than every iteration: `VelocityOnPolicyRunner.save()`
+        re-exports to ONNX (and uploads it to wandb) on every call, so
+        tracking at iteration granularity would multiply that cost by
+        however many iterations the reward keeps improving for. This is
+        coarser than the true best iteration -- it can only ever point at a
+        checkpoint that was actually saved -- but that's the same
+        granularity every other checkpoint already has. Turns "grep the job
+        log for the peak `Mean reward:` line, then hope that exact iteration
+        was saved" (the splits-run1-2026-09-03 problem) into "read
+        `model_best.pt`'s own `iter` field" -- and since it matches the
+        uploader's `model_*.pt` glob, it syncs to the HF model repo
+        automatically, re-copied (mtime bumps) every time a new best appears.
+        """
+        if self._best_ckpt_path is None or not self.logger.rewbuffer:
+            return
+        mean_reward = statistics.mean(self.logger.rewbuffer)
+        if mean_reward <= self._best_mean_reward:
+            return
+        self._best_mean_reward = mean_reward
+        shutil.copy2(path, self._best_ckpt_path)
+
+    def _append_reward_history(self) -> None:
+        if self._reward_history_path is None:
+            return
+        row: dict[str, float] = {"iteration": self.current_learning_iteration}
+        if self.logger.rewbuffer:
+            row["mean_reward"] = statistics.mean(self.logger.rewbuffer)
+        if self.logger.lenbuffer:
+            row["mean_episode_length"] = statistics.mean(self.logger.lenbuffer)
+        row.update(self._extras_means())
+
+        write_header = not os.path.isfile(self._reward_history_path)
+        with open(self._reward_history_path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
 
 
 from .microduck_velocity_env_cfg import (
@@ -70,6 +186,10 @@ from .microduck_roulade_env_cfg import (
 from .microduck_splits_env_cfg import (
     make_microduck_splits_env_cfg,
     MicroduckSplitsRlCfg,
+)
+from .microduck_splits_cycle_env_cfg import (
+    make_microduck_splits_cycle_env_cfg,
+    MicroduckSplitsCycleRlCfg,
 )
 from .backlash import make_backlash_variant
 
@@ -138,6 +258,24 @@ register_mjlab_task(
     env_cfg=make_microduck_splits_env_cfg(rough=True),
     play_env_cfg=make_microduck_splits_env_cfg(play=True, rough=True),
     rl_cfg=MicroduckSplitsRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Splits-cycle — commanded, alternating split <-> stand (v2 of Splits: never
+# stops oscillating, unlike v1's single episodic descend-and-hold).
+register_mjlab_task(
+    task_id="Mjlab-SplitsCycle-Flat-MicroDuck",
+    env_cfg=make_microduck_splits_cycle_env_cfg(),
+    play_env_cfg=make_microduck_splits_cycle_env_cfg(play=True),
+    rl_cfg=MicroduckSplitsCycleRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-SplitsCycle-Rough-MicroDuck",
+    env_cfg=make_microduck_splits_cycle_env_cfg(rough=True),
+    play_env_cfg=make_microduck_splits_cycle_env_cfg(play=True, rough=True),
+    rl_cfg=MicroduckSplitsCycleRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 
@@ -281,6 +419,7 @@ _BACKLASH_TASKS = (
     ("Mjlab-RollerCrouch-Flat-Backlash-MicroDuck", make_microduck_roller_crouch_env_cfg, {}, MicroduckRollerCrouchRlCfg, _BL_ROLLERS),
     ("Mjlab-RollerSlope-Flat-Backlash-MicroDuck", make_microduck_roller_slope_env_cfg, {}, MicroduckRollerSlopeRlCfg, _BL_ROLLERS),
     ("Mjlab-Splits-Flat-Backlash-MicroDuck", make_microduck_splits_env_cfg, {}, MicroduckSplitsRlCfg, _BL_ALLCOL),
+    ("Mjlab-SplitsCycle-Flat-Backlash-MicroDuck", make_microduck_splits_cycle_env_cfg, {}, MicroduckSplitsCycleRlCfg, _BL_ALLCOL),
 )
 for _task_id, _make_cfg, _kw, _rl_cfg, _robot_cfg in _BACKLASH_TASKS:
     register_mjlab_task(

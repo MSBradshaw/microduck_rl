@@ -6458,6 +6458,49 @@ class SitStandCommandCfg(UniformVelocityCommandCfg):
         return SitStandCommand(self, env)
 
 
+class AlternatingPostureCommand(SitStandCommand):
+    """SitStandCommand variant that DETERMINISTICALLY ALTERNATES the posture
+    flag every dwell period instead of drawing it independently at random.
+
+    SitStandCommand's ``sit_prob`` draw can repeat the same posture back-to-
+    back, so a policy trained on it never has to keep moving. For a task
+    whose whole point IS constant oscillation (splits-cycle: split -> stand
+    -> split -> ...), each resample flips the flag relative to whatever it
+    currently is, guaranteeing alternation. ``sit_prob`` is ignored.
+
+    Each env's FIRST-EVER resample (whenever the command manager happens to
+    call it) is still a random draw, so parallel envs don't start phase-
+    locked; every resample after that flips. Because the "have I resampled
+    yet" flag never resets, an env's phase carries across episode
+    boundaries too -- only the very first draw of an env's lifetime is
+    random, everything after is a deterministic flip.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRlEnv):
+        super().__init__(cfg, env)
+        self._ever_resampled = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
+        n = len(env_ids)
+        if n == 0:
+            return
+        first = ~self._ever_resampled[env_ids]
+        random_flag = (torch.rand(n, device=self.device) < 0.5).float()
+        flipped_flag = 1.0 - self.vel_command_b[env_ids, 0]
+        new_flag = torch.where(first, random_flag, flipped_flag)
+        self.vel_command_b[env_ids] = 0.0
+        self.vel_command_b[env_ids, 0] = new_flag
+        self._ever_resampled[env_ids] = True
+
+
+@_dataclass(kw_only=True)
+class AlternatingPostureCommandCfg(SitStandCommandCfg):
+    class_type: type = AlternatingPostureCommand
+
+    def build(self, env: ManagerBasedRlEnv) -> "AlternatingPostureCommand":
+        return AlternatingPostureCommand(self, env)
+
+
 def _posture_blend(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     """Target blend ∈ [0, 1] (0 = STAND, 1 = SIT) for the posture rewards.
 

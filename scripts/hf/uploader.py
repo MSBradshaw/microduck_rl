@@ -38,6 +38,9 @@ def main() -> int:
             # also pick up the dumped configs once
             files += [p for p in root.glob("**/params/*.yaml")]
             files += [p for p in root.glob("**/params/*.json")]
+            # reward_history.csv grows every save_interval -- re-upload it
+            # each time its mtime changes, same as a checkpoint being updated
+            files += [p for p in root.glob("**/reward_history.csv")]
 
             to_upload: list[CommitOperationAdd] = []
             for f in files:

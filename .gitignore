@@ -40,3 +40,8 @@ logdir/
 logdir/.claude/worktrees/
 
 MUJOCO_LOG.TXT
+
+# Training-run artifacts (reward_history.csv etc.) — generated output, never
+# source. `logs` above already covers the normal case; this is the general
+# policy so it holds regardless of where a run happens to write one.
+*.csv
