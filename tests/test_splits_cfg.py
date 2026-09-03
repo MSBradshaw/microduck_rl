@@ -110,3 +110,53 @@ def test_self_collisions_present():
     cfg = make_microduck_splits_env_cfg()
     assert "self_collisions" in cfg.rewards
     assert cfg.rewards["self_collisions"].weight < 0
+
+
+def test_split_depth_curriculum_ramps_to_full_target():
+    cfg = make_microduck_splits_env_cfg()
+    assert "split_depth" in cfg.curriculum
+    stages = cfg.curriculum["split_depth"].params["depth_stages"]
+    fractions = [s["fraction"] for s in stages]
+    assert fractions[0] < 1.0
+    assert fractions[-1] == 1.0
+    assert fractions == sorted(fractions)
+    assert cfg.curriculum["split_depth"].params["reward_names"] == ("pose_split", "pose_split_l1")
+
+
+def test_discovery_vs_polish_staging_starts_at_zero():
+    cfg = make_microduck_splits_env_cfg()
+    for name in ("settle_damping_weight", "torque_rate_weight", "descent_speed_cap_weight"):
+        assert name in cfg.curriculum
+        first_stage = cfg.curriculum[name].params["weight_stages"][0]
+        assert first_stage["step"] == 0
+        assert first_stage["weight"] == 0.0
+
+
+def test_descent_speed_cap_ramps_to_a_positive_weight():
+    # descent_speed_cap wraps trunk_downward_velocity_penalty, which returns
+    # -clamp(..., min=0.0) -- ALWAYS <= 0, self-negating. A negative final
+    # weight here would double-negate it into a reward for violent drops
+    # (the exact "bit four envs" bug class) -- this locks the sign in.
+    cfg = make_microduck_splits_env_cfg()
+    stages = cfg.curriculum["descent_speed_cap_weight"].params["weight_stages"]
+    assert stages[-1]["weight"] > 0
+
+
+def test_action_rate_curriculum_ramps_like_standup():
+    cfg = make_microduck_splits_env_cfg()
+    weights = [s["weight"] for s in cfg.curriculum["action_rate_weight"].params["weight_stages"]]
+    assert weights[0] == -0.1
+    assert weights[-1] == -1.0
+    assert weights == sorted(weights, reverse=True)
+
+
+def test_push_curriculum_ramps_from_zero():
+    cfg = make_microduck_splits_env_cfg()
+    assert "push_magnitude" in cfg.curriculum
+    stages = cfg.curriculum["push_magnitude"].params["push_stages"]
+    assert stages[0]["velocity_range"]["x"] == (0.0, 0.0)
+
+
+def test_task_registered_with_correct_experiment_name():
+    from mjlab_microduck.tasks.microduck_splits_env_cfg import MicroduckSplitsRlCfg
+    assert MicroduckSplitsRlCfg.experiment_name == "microduck_splits"

@@ -527,10 +527,124 @@ def make_microduck_splits_env_cfg(
         del cfg.curriculum["terrain_levels"]
     del cfg.curriculum["command_vel"]
 
+    # ── Curriculum ──────────────────────────────────────────────────────────
+    # Split-depth: ramp the target from a modest depth to the full measured
+    # target (spec §5) — every difficulty curriculum already in this repo
+    # ramps easy->hard rather than starting at max, for the same reason.
+    cfg.curriculum["split_depth"] = CurriculumTermCfg(
+        func=microduck_mdp.pose_target_depth_curriculum,
+        params={
+            "reward_names": ("pose_split", "pose_split_l1"),
+            "joint_indices": tuple(SPLIT_JOINT_OVERRIDES.keys()),
+            "full_targets": dict(SPLIT_JOINT_OVERRIDES),
+            "depth_stages": [
+                {"step": 0,          "fraction": 0.55},
+                {"step": 500 * 24,   "fraction": 0.70},
+                {"step": 1000 * 24,  "fraction": 0.85},
+                {"step": 1500 * 24,  "fraction": 1.00},
+            ],
+        },
+    )
+
+    # Discovery-vs-polish: identical reasoning to standup's arrival_damping/
+    # torque_rate curricula — any attempt-tax active while the descent skill
+    # is still being discovered makes "stay standing" the optimum.
+    cfg.curriculum["settle_damping_weight"] = CurriculumTermCfg(
+        func=microduck_mdp.reward_weight,
+        params={
+            "reward_name": "settle_damping",
+            "weight_stages": [
+                {"step": 0,          "weight": 0.0},
+                {"step": 2000 * 24,  "weight": -0.025},
+                {"step": 3000 * 24,  "weight": -0.05},
+            ],
+        },
+    )
+    cfg.curriculum["torque_rate_weight"] = CurriculumTermCfg(
+        func=microduck_mdp.reward_weight,
+        params={
+            "reward_name": "joint_torque_rate_l2",
+            "weight_stages": [
+                {"step": 0,          "weight": 0.0},
+                {"step": 2000 * 24,  "weight": -1e-3},
+            ],
+        },
+    )
+    # trunk_downward_velocity_penalty returns `-clamp(..., min=0.0)` --
+    # ALWAYS <= 0, i.e. self-negating (same class as pose_l1_penalty /
+    # height_l1_penalty). Per AGENTS.md's sign rule this needs a POSITIVE
+    # weight -- a negative weight here would double-negate it into a
+    # REWARD for fast, violent drops.
+    cfg.curriculum["descent_speed_cap_weight"] = CurriculumTermCfg(
+        func=microduck_mdp.reward_weight,
+        params={
+            "reward_name": "descent_speed_cap",
+            "weight_stages": [
+                {"step": 0,          "weight": 0.0},
+                {"step": 2000 * 24,  "weight": 2.0},
+            ],
+        },
+    )
+    cfg.curriculum["action_rate_weight"] = CurriculumTermCfg(
+        func=microduck_mdp.reward_weight,
+        params={
+            "reward_name": "action_rate_l2",
+            "weight_stages": [
+                {"step": 0,          "weight": -0.1},
+                {"step": 500 * 24,   "weight": -0.2},
+                {"step": 750 * 24,   "weight": -0.4},
+                {"step": 1000 * 24,  "weight": -0.6},
+                {"step": 1250 * 24,  "weight": -0.8},
+                {"step": 1500 * 24,  "weight": -1.0},
+            ],
+        },
+    )
+
+    if ENABLE_COM_RANDOMIZATION:
+        cfg.curriculum["com_range"] = CurriculumTermCfg(
+            func=microduck_mdp.com_range_curriculum,
+            params={
+                "event_name": "randomize_com",
+                "range_stages": [
+                    {"step": 0,          "range": 0.003},
+                    {"step": 500 * 24,   "range": 0.005},
+                    {"step": 1000 * 24,  "range": 0.01},
+                    {"step": 1500 * 24,  "range": 0.015},
+                ],
+            },
+        )
+    if ENABLE_HEAD_COM_RANDOMIZATION:
+        cfg.curriculum["head_com_range"] = CurriculumTermCfg(
+            func=microduck_mdp.com_range_curriculum,
+            params={
+                "event_name": "randomize_head_com",
+                "range_stages": [
+                    {"step": 0,          "range": 0.003},
+                    {"step": 500 * 24,   "range": 0.005},
+                    {"step": 1000 * 24,  "range": 0.01},
+                ],
+            },
+        )
+    if ENABLE_VELOCITY_PUSHES:
+        # Ramped from zero, UNLIKE standup (which pushes from step 0) — a
+        # push mid-descent is a different perturbation than one while
+        # holding a stand (spec §5, left as an explicit open call).
+        cfg.curriculum["push_magnitude"] = CurriculumTermCfg(
+            func=microduck_mdp.push_curriculum,
+            params={
+                "event_name": "push_robot",
+                "push_stages": [
+                    {"step": 0,          "velocity_range": {"x": (0.0, 0.0),   "y": (0.0, 0.0)}},
+                    {"step": 1000 * 24,  "velocity_range": {"x": (-0.1, 0.1),  "y": (-0.1, 0.1)}},
+                    {"step": 2000 * 24,  "velocity_range": {"x": VELOCITY_PUSH_RANGE, "y": VELOCITY_PUSH_RANGE}},
+                ],
+            },
+        )
+
     return cfg
 
 
-# ── RL runner config (Task 6 fills in experiment_name / final values) ─────────
+# ── RL runner config ───────────────────────────────────────────────────────
 MicroduckSplitsRlCfg = RslRlOnPolicyRunnerCfg(
     actor=RslRlModelCfg(
         hidden_dims=(512, 256, 128),
