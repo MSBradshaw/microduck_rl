@@ -759,5 +759,5 @@ MicroduckSplitsCycleRlCfg = RslRlOnPolicyRunnerCfg(
     run_name="microduck_splits_cycle",
     save_interval=250,
     num_steps_per_env=24,
-    max_iterations=15_000,
+    max_iterations=6000,
 )
