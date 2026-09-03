@@ -973,6 +973,45 @@ def pitch_split(
     pitch_proxy = asset.data.projected_gravity_b[:, 0]
     return torch.exp(-(((pitch_proxy - target_pitch) / std) ** 2))
 
+def pose_target_depth_curriculum(
+    env: ManagerBasedRlEnv,
+    split_stages: list[dict],
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    std: float = 0.04 # the value used in the stand height_target_gaussian
+) -> torch.Tensor:
+    
+    """Update push velocity range based on training progress.
+
+    Start small to encourage a slight dip in body location heigh. 
+    Assume that we are starting from standing (STAND_Z = 0.115)
+    split would be approaching (but presumably not ad SIT_Z = 0.060)
+
+    Args:
+        split_stages: List of dicts with 'step' and 'target_height' keys
+            Example: [
+                {"step": 0, "target_height": 0.10125}, # 25%
+                {"step": 250, "target_height": 0.0875}, # 50%
+                {"step": 500, "target_height": 0.07375},  # 75% I am not sure how low is physically possible
+            ]
+
+    Returns:
+        Gaussian as a tensor
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    # column 2 = z (height)
+    z = torch.nan_to_num(
+        asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0
+    )
+    
+    target_height = split_stages[0]['split_depth'] # to ensure it is always set
+    for stage in split_stages:
+        if env.common_step_counter > stage["step"]:
+            target_height = stage['split_depth']
+
+    # guassian 
+    return torch.exp(-((z - target_height) / std) ** 2)
+    
+
 
 def fallen_too_long(
     env: ManagerBasedRlEnv,
@@ -3500,6 +3539,36 @@ def reward_weight(
         if env.common_step_counter > stage["step"]:
             term_cfg.weight = stage["weight"]
     return torch.tensor([term_cfg.weight])
+
+
+def pose_target_depth_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    reward_names: tuple[str, ...],
+    joint_indices: tuple[int, ...],
+    full_targets: dict[int, float],
+    depth_stages: list[dict],
+) -> torch.Tensor:
+    """Ramp a pose-target reward's depth from a fraction of the full target to 100%.
+
+    Unlike `reward_weight` (ramps HOW MUCH a term counts) this ramps WHAT
+    the term is rewarding — the target angle itself. Needed for targets far
+    from the natural resting pose (e.g. a full split): dropping the maximal
+    target in from step 0 risks a shallow "good enough" local optimum with
+    no pressure to go deeper (spec §5). `depth_stages`:
+    `[{"step": int, "fraction": float}, ...]`; latest passed stage wins,
+    applied identically to every reward in `reward_names`.
+    """
+    del env_ids
+    fraction = depth_stages[0]["fraction"]
+    for stage in depth_stages:
+        if env.common_step_counter >= stage["step"]:
+            fraction = stage["fraction"]
+    overrides = {idx: fraction * full_targets[idx] for idx in joint_indices}
+    for name in reward_names:
+        term_cfg = env.reward_manager.get_term_cfg(name)
+        term_cfg.params["target_overrides"] = dict(overrides)
+    return torch.tensor([fraction])
 
 
 def com_range_curriculum(

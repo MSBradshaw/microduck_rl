@@ -4,9 +4,10 @@ only ever touch env.scene[name].data.projected_gravity_b, so the fake
 objects below only need that one attribute, nothing else.
 """
 
+import pytest
 import torch
 
-from mjlab_microduck.tasks.mdp import pitch_split, roll_split
+from mjlab_microduck.tasks.mdp import pitch_split, pose_target_depth_curriculum, roll_split
 
 
 class _GravityData:
@@ -69,3 +70,61 @@ def test_pitch_split_peaks_at_the_target_not_at_zero():
     env_vertical = _GravityEnv([[0.0, 0.0, -1.0]])
     out_at_vertical = pitch_split(env_vertical, target_pitch=target, std=0.15)
     assert float(out_at_vertical[0]) < float(out_at_target[0])
+
+
+class _TermCfg:
+    def __init__(self, params):
+        self.params = params
+
+
+class _RewardManager:
+    def __init__(self, term_cfgs):
+        self._term_cfgs = term_cfgs
+
+    def get_term_cfg(self, name):
+        return self._term_cfgs[name]
+
+
+class _CurricEnv:
+    def __init__(self, step, term_cfgs):
+        self.common_step_counter = step
+        self.reward_manager = _RewardManager(term_cfgs)
+
+
+def test_depth_curriculum_scales_targets_by_stage_fraction():
+    full_targets = {2: 1.2, 3: 1.0}
+    term = _TermCfg(params={"target_overrides": {}})
+    env = _CurricEnv(step=1000, term_cfgs={"pose_split": term})
+    stages = [
+        {"step": 0, "fraction": 0.5},
+        {"step": 500, "fraction": 0.75},
+        {"step": 1500, "fraction": 1.0},
+    ]
+    pose_target_depth_curriculum(
+        env, torch.tensor([]),
+        reward_names=("pose_split",),
+        joint_indices=(2, 3),
+        full_targets=full_targets,
+        depth_stages=stages,
+    )
+    # step=1000 is past the 500 stage but before 1500 -> fraction 0.75
+    assert term.params["target_overrides"][2] == pytest.approx(0.9)
+    assert term.params["target_overrides"][3] == pytest.approx(0.75)
+
+
+def test_depth_curriculum_applies_to_every_named_reward():
+    full_targets = {2: 1.0}
+    terms = {
+        "pose_split": _TermCfg(params={"target_overrides": {}}),
+        "pose_split_l1": _TermCfg(params={"target_overrides": {}}),
+    }
+    env = _CurricEnv(step=0, term_cfgs=terms)
+    pose_target_depth_curriculum(
+        env, torch.tensor([]),
+        reward_names=("pose_split", "pose_split_l1"),
+        joint_indices=(2,),
+        full_targets=full_targets,
+        depth_stages=[{"step": 0, "fraction": 0.4}],
+    )
+    for name in ("pose_split", "pose_split_l1"):
+        assert terms[name].params["target_overrides"][2] == pytest.approx(0.4)
