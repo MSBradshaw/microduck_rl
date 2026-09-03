@@ -36,8 +36,38 @@ assert MICRODUCK_WALK_BACKLASH_XML.exists(), f"XML not found: {MICRODUCK_WALK_BA
 assert MICRODUCK_ALLCOLLISIONS_ROLLERS_BACKLASH_XML.exists(), f"XML not found: {MICRODUCK_ALLCOLLISIONS_ROLLERS_BACKLASH_XML}"
 
 
+# Electronics added inside the head, measured 2026-09-03. `jaw_soft` IS the head
+# assembly despite the name -- it sits at the end of the neck chain
+# (trunk_base -> neck -> neck_pitch -> yaw_roll_motion -> jaw_soft) and at
+# 188.8 g it is the heaviest body after the trunk. 15 g there is not negligible:
+# the head is far from the CoM, so it has leverage on pitch inertia.
+HEAD_BODY = "jaw_soft"
+HEAD_ELECTRONICS_MASS = 0.015
+
+
+def _add_head_electronics(spec: mujoco.MjSpec) -> mujoco.MjSpec:
+    """Add the measured head electronics mass, scaling inertia with it.
+
+    Scaling `fullinertia` by the mass ratio assumes the added mass is
+    distributed like the body already is. It is a 7.9% change on a body whose
+    own inertia is not separately characterised, so a distribution assumption is
+    not the limiting error here.
+    """
+    for body in spec.bodies:
+        if body.name == HEAD_BODY:
+            original = body.mass
+            if original > 0:
+                scale = (original + HEAD_ELECTRONICS_MASS) / original
+                body.mass = original + HEAD_ELECTRONICS_MASS
+                body.fullinertia = [x * scale for x in body.fullinertia]
+            break
+    return spec
+
+
 def get_walk_spec() -> mujoco.MjSpec:
-    return mujoco.MjSpec.from_file(str(MICRODUCK_WALK_XML))
+    return _add_head_electronics(
+        mujoco.MjSpec.from_file(str(MICRODUCK_WALK_XML))
+    )
 
 
 def get_standup_spec() -> mujoco.MjSpec:

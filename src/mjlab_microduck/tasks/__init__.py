@@ -94,7 +94,7 @@ from .hop import (
     hop_rl_cfg,
     make_hop_variant,
 )
-from mjlab_microduck.robot.sprung_foot import H_ADD
+from mjlab_microduck.robot.sprung_foot import H_ADD, K_MEASURED
 
 # Standard velocity task
 register_mjlab_task(
@@ -194,6 +194,32 @@ for _label, _k, _travel, _pad in HOP_ARMS:
         runner_cls=MicroduckOnPolicyRunner,
     )
     print(f"✓ Hop task registered: {_tid}")
+
+# The STANDARD-foot hop arm: the stock robot, no boot at all. This is the
+# engineering baseline -- what the robot is today -- and it is what the spring
+# boot has to beat. `Locked` is the SCIENTIFIC control (matched 51 g pad and
+# matched 30 mm height, zero travel, so only compliance differs); Standard is
+# the honest alternative, carrying neither the 51 g of distal mass nor the 30 mm
+# of added height that cost -2%/mm of hop.
+#
+# The stiffness argument only reaches hop_energy_monitor, which reports zeros
+# when the spring joints are absent -- so it is inert here.
+# It deliberately skips make_sprung_variant: with no spring joints there is no
+# CoM band to shift and no pose scoping to do, and hop_energy_monitor already
+# reports zeros when the joints are absent.
+_std_tid = "Mjlab-Hop-Flat-Standard-MicroDuck"
+register_mjlab_task(
+    task_id=_std_tid,
+    env_cfg=apply_hop_corrections(
+        make_hop_variant(make_microduck_velocity_env_cfg(), stiffness=K_MEASURED)
+    ),
+    play_env_cfg=apply_hop_corrections(
+        make_hop_variant(make_microduck_velocity_env_cfg(play=True), stiffness=K_MEASURED)
+    ),
+    rl_cfg=hop_rl_cfg("standard"),
+    runner_cls=MicroduckOnPolicyRunner,
+)
+print(f"✓ Hop task registered: {_std_tid}")
 
 # Velocity2 — microban reward/regularization recipe on the velocity task.
 register_mjlab_task(

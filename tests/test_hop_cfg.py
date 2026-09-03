@@ -163,15 +163,26 @@ def test_hop_period_is_above_the_spring_mass_period():
     assert HOP_PERIOD > 0.094
 
 
-def test_hop_arms_are_locked_plus_two_stiffnesses():
+def test_hop_arms_are_locked_plus_the_stiffness_set():
+    from mjlab_microduck.robot.sprung_foot import K_MEASURED
     from mjlab_microduck.tasks.hop import HOP_ARMS
 
     labels = [a[0] for a in HOP_ARMS]
     assert "locked" in labels, "the locked arm is the geometric control"
     stiffnesses = {a[1] for a in HOP_ARMS if a[0] != "locked"}
-    assert stiffnesses == {2500.0, 3900.0}
+    # k2500/k3900 were a BRACKET (they gave 23 and 27 mm of rise); K_MEASURED is
+    # the real prototype, measured on the gripper bench, and is the arm to train.
+    assert stiffnesses == {2500.0, K_MEASURED, 3900.0}
+    assert 2500.0 < K_MEASURED < 3900.0, "the bracket must straddle the measurement"
+    # The Locked control must wear the SAME geometry as the sprung arms, so it
+    # carries K_MEASURED as a nominal stiffness with travel 0 -- the spring joint
+    # is then omitted entirely and the value is unused.
+    locked = next(a for a in HOP_ARMS if a[0] == "locked")
+    assert locked[2] == 0.0
     for label, _k, travel, pad in HOP_ARMS:
-        assert pad == pytest.approx(0.070), "mass is held; Stage 1 measured it"
+        # DELTA of fitting a spring boot: 69 g boot - 18 g standard pad it
+        # replaces. The common 16.5 g interface is in both configs and cancels.
+        assert pad == pytest.approx(0.051), "delta mass, measured 2026-09-03"
         if label == "locked":
             assert travel == 0.0
         else:
@@ -635,7 +646,11 @@ def test_load_force_registered_on_every_arm():
         assert term.weight == pytest.approx(LOAD_FORCE_WEIGHT), tid
         assert term.params["sensor_name"] == SENSOR_NAME, tid
         assert term.params["command_name"] == "twist", tid
-        assert term.params["body_weight_n"] == pytest.approx(BODY_WEIGHT_N), tid
+        # NOT the BODY_WEIGHT_N constant: apply_hop_corrections replaces it with
+        # the arm's real compiled mass, which now differs per arm (8.380 N sprung,
+        # 7.380 N standard). See
+        # test_body_weight_is_taken_from_the_ACTUAL_arm_not_a_constant.
+        assert 7.0 < term.params["body_weight_n"] < 9.0, tid
         assert term.params["max_ratio"] == pytest.approx(LOAD_FORCE_MAX_RATIO), tid
 
 
@@ -676,10 +691,24 @@ def test_load_force_is_identical_on_the_locked_control_arm():
     assert locked.params == sprung.params
 
 
-def test_body_weight_constant_matches_the_measured_mass():
-    """0.877 kg (737 g robot + 2 x 70 g boot, worn by all three arms) x 9.81."""
-    assert BODY_WEIGHT_N == pytest.approx(0.877 * 9.81, abs=0.005)
-    assert PAD_MASS == pytest.approx(0.070)
+def test_body_weight_is_taken_from_the_ACTUAL_arm_not_a_constant():
+    """The arms no longer share a mass, so a single constant is wrong.
+
+    854.2 g with spring boots (752.2 g robot + 2 x 51 g delta) against 752.2 g
+    standard. hop_load_force normalises by body weight, so hardcoding one value
+    made the lighter Standard arm's load term read 13.6% high -- an advantage to
+    the control arm. apply_hop_corrections now compiles each robot and uses its
+    real weight.
+    """
+    sprung = _registered("k3344").rewards["hop_load_force"].params["body_weight_n"]
+    assert sprung == pytest.approx(0.8542 * 9.81, rel=0.01)
+
+    from mjlab.tasks.registry import load_env_cfg
+    std = load_env_cfg("Mjlab-Hop-Flat-Standard-MicroDuck")
+    std_w = std.rewards["hop_load_force"].params["body_weight_n"]
+    assert std_w == pytest.approx(0.7522 * 9.81, rel=0.01)
+    assert std_w < sprung, "the standard arm is lighter; it must not share a constant"
+    assert PAD_MASS == pytest.approx(0.051)
 
 
 def test_load_force_stays_below_the_launch_terms():

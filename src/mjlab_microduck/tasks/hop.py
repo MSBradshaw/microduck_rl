@@ -493,7 +493,7 @@ from dataclasses import replace
 # H_ADD dropped from this import: make_hop_variant no longer takes one. The hop
 # rewards measure rise above takeoff, so the boot's height is irrelevant to them;
 # its one remaining consumer is the CoM band, owned by make_sprung_variant.
-from mjlab_microduck.robot.sprung_foot import PAD_MASS, TRAVEL
+from mjlab_microduck.robot.sprung_foot import K_MEASURED, PAD_MASS, TRAVEL
 from mjlab_microduck.tasks.run import MicroduckRunRlCfg
 
 # (label, stiffness N/m, travel m, pad mass kg).
@@ -507,12 +507,18 @@ from mjlab_microduck.tasks.run import MicroduckRunRlCfg
 # measured the mass penalty separately (-17.7% at 30 g, -61.9% at 90 g vs the
 # rigid running baseline).
 HOP_ARMS = (
-    ("locked", 3900.0, 0.0, PAD_MASS),
+    ("locked", K_MEASURED, 0.0, PAD_MASS),
     ("k2500", 2500.0, TRAVEL, PAD_MASS),
+    # The MEASURED prototype stiffness (gripper bench, 2026-09-03). This is the
+    # arm to train and compare against Locked; k2500/k3900 were a stiffness
+    # BRACKET and they served that purpose -- they gave 23 mm and 27 mm of rise,
+    # so 3344 should land at ~25-26 mm.
+    ("k3344", K_MEASURED, TRAVEL, PAD_MASS),
     ("k3900", 3900.0, TRAVEL, PAD_MASS),
 )
 
-HOP_ARM_SUFFIX = {"locked": "Locked", "k2500": "K2500", "k3900": "K3900"}
+HOP_ARM_SUFFIX = {"locked": "Locked", "k2500": "K2500",
+                  "k3344": "K3344", "k3900": "K3900"}
 
 
 
@@ -555,6 +561,24 @@ def apply_hop_corrections(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
 
     scale = 0.005 / HOP_TIMESTEP
     params = str(Path(__file__).resolve().parents[1] / "robot" / _MEASURED_PARAMS)
+
+    # hop_load_force normalises ground reaction force by body weight, and the
+    # arms no longer share a mass: 854.2 g with spring boots (2 x 51 g delta),
+    # 752.2 g standard. Compile the actual robot and use its real weight, so no
+    # arm gets a normalisation advantage. Hardcoding one value made the lighter
+    # Standard arm's load term read 13.6% high.
+    robot_ent = cfg.scene.entities["robot"]
+    try:
+        model = robot_ent.spec_fn().compile()
+        w = float(sum(model.body_mass)) * 9.81
+        term = cfg.rewards.get("hop_load_force")
+        if term is not None and "body_weight_n" in term.params:
+            term.params["body_weight_n"] = w
+            print(f"  [hop] body weight {w:.3f} N "
+                  f"({sum(model.body_mass)*1000:.1f} g) -> hop_load_force")
+    except Exception as exc:  # noqa: BLE001 - never block registration on this
+        print(f"  [hop] WARNING could not compute body weight ({exc}); "
+              f"hop_load_force keeps its default")
 
     robot = cfg.scene.entities["robot"]
     new_acts = []

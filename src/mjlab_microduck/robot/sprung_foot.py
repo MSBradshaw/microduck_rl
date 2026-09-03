@@ -80,7 +80,15 @@ H_ADD = 0.030      # measured on the Sarrus prototype (was an assumed 0.025)
 # docs/sim2real/spring_boot_identification_spec.md.
 K_MEASURED = 3344.0
 
-PAD_MASS = 0.070   # measured (was an assumed 0.020) — 70 g per boot
+# DELTA mass of fitting a spring boot, per foot: the 69 g spring boot REPLACES
+# the 18 g standard pad foot, so 69 - 18 = 51 g. The common motor-to-boot
+# interface (16.5 g) is present in BOTH configurations and cancels.
+#
+# This is a delta, not the boot's mass, because the pad body is ADDED on top of
+# the stock model (737.2 g -> compiles with both pads on top) and the stock model
+# already matches the real bare robot, i.e. it already contains the standard
+# pads. Using the boot's full 70 g over-counted by 19 g per foot.
+PAD_MASS = 0.051   # measured 2026-09-03: 69 g spring boot - 18 g standard pad
 TRAVEL = 0.012     # measured (was an assumed 0.015)
 # Damping is specified as a RATIO, not an absolute rate, and derived per arm as
 # c = 2*zeta*sqrt(k*pad_mass).
