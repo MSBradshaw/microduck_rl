@@ -7356,3 +7356,80 @@ def roulade_lateral_velocity_penalty(
     """Body-frame lateral (y) linear velocity² — keeps the roll straight."""
     asset: Entity = env.scene[asset_cfg.name]
     return torch.nan_to_num(asset.data.root_link_lin_vel_b[:, 1].pow(2), nan=0.0)
+
+
+# ── Pistol squat ──────────────────────────────────────────────────────────
+def pistol_free_leg_clearance(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    margin: float = 0.03,
+    std: float = 0.02,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", site_names=("right_foot",)),
+) -> torch.Tensor:
+    """Reward the free (right) foot for clearing the ground during a
+    commanded pistol squat.
+
+    Deliberately height-based, NOT a joint-angle pose-match target like the
+    stance leg gets (design spec §3.2) -- the free leg's exact shape is left
+    for the policy to discover; this only encodes "stays off the ground."
+    Full reward (1.0) once the foot is at or above `margin`; smoothly decays
+    as it dips below. Gated on the commanded posture blend (0 at STAND, 1 at
+    full squat) so it's inert during normal standing -- a foot naturally
+    near the ground while standing shouldn't be punished.
+    """
+    blend = _posture_blend(env, command_name)
+    asset = env.scene[asset_cfg.name]
+    foot_z = (
+        asset.data.site_pos_w[:, asset_cfg.site_ids[0], 2]
+        - env.scene.terrain.env_origins[:, 2]
+    )
+    shortfall = torch.clamp(margin - foot_z, min=0.0)
+    height_reward = torch.exp(-((shortfall / std) ** 2))
+    return blend * height_reward
+
+
+def posture_depth_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    reward_names: tuple[str, ...],
+    joint_indices: tuple[int, ...],
+    full_overrides: dict[int, float],
+    depth_stages: list[dict],
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Ramp a posture_* reward's `sit_overrides` depth from a fraction of
+    `full_overrides` to 100%, interpolating FROM EACH JOINT'S OWN HOME ANGLE
+    -- not from zero. (`pose_target_depth_curriculum` elsewhere in this file
+    scales the raw target value directly, which silently breaks for any
+    joint whose HOME angle isn't ~0 -- e.g. ankle's HOME=0.453, target=0
+    would never move at all under that scheme. This task's ankle target IS
+    exactly that case, so this is a real correctness requirement, not
+    pedantry.)
+
+    Unlike the per-transition slewed blend `AlternatingPostureCommand`
+    already runs every dwell period (0->1 within EACH transition), this
+    ramps what "1" (the command's own SQUAT endpoint) actually targets, over
+    TRAINING iterations -- design spec §6's explicit depth curriculum,
+    proposed because single-leg balance is a harder skill than splits_cycle
+    (which dropped an equivalent curriculum, judging its own per-transition
+    ramp sufficient). `depth_stages`: `[{"step": int, "fraction": float}, ...]`;
+    latest passed stage wins, applied identically to every reward in
+    `reward_names`.
+    """
+    del env_ids
+    fraction = depth_stages[0]["fraction"]
+    for stage in depth_stages:
+        if env.common_step_counter >= stage["step"]:
+            fraction = stage["fraction"]
+    asset = env.scene[asset_cfg.name]
+    home = _servo_default_joint_pos(env, asset)[0]  # (num_joints,) -- identical across envs
+    overrides = {
+        idx: float(home[idx]) + fraction * (full_overrides[idx] - float(home[idx]))
+        for idx in joint_indices
+    }
+    for name in reward_names:
+        term_cfg = env.reward_manager.get_term_cfg(name)
+        merged = dict(term_cfg.params["sit_overrides"])
+        merged.update(overrides)
+        term_cfg.params["sit_overrides"] = merged
+    return torch.tensor([fraction])
