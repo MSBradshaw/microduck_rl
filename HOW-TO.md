@@ -694,5 +694,16 @@ cd microduck_rl
   caps depth at 85% of sitstand's SIT keyframe, not 100%). Explicit depth
   curriculum on top of the usual per-transition ramp — a harder balance
   problem than splits_cycle, which judged its own per-transition ramp
-  sufficient. Job `6a9af987259f8e97255df74f`, 8000 iterations, not yet
-  evaluated.
+  sufficient.
+  First submission (job `6a9af987259f8e97255df74f`) was **cancelled before
+  it produced anything useful**: `PISTOL_Z`/the free-leg anchor pose had
+  been measured from a configuration where the FREE foot ended up touching
+  the floor instead of the stance foot (an eyeballing mistake — the
+  measurement script's own `floor_contacts` field was never checked), so
+  the reward stack was paying the policy to keep both feet down. Caught by
+  a final whole-branch review before the run got far; fixed (corrected
+  measurement + a hard hasn't-checked-`floor_contacts` assertion added to
+  the script, plus a missing hard contact gate on the free-leg reward that
+  the same review flagged) — see design spec §2.1. Resubmitted as job
+  `6a9b329de686246ca69a28c1` (`pistol-run2-2026-09-04`), 8000 iterations,
+  not yet evaluated.
