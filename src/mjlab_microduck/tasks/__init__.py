@@ -191,6 +191,10 @@ from .microduck_splits_cycle_env_cfg import (
     make_microduck_splits_cycle_env_cfg,
     MicroduckSplitsCycleRlCfg,
 )
+from .microduck_pistol_env_cfg import (
+    make_microduck_pistol_env_cfg,
+    MicroduckPistolRlCfg,
+)
 from .backlash import make_backlash_variant
 
 # Standard velocity task
@@ -276,6 +280,24 @@ register_mjlab_task(
     env_cfg=make_microduck_splits_cycle_env_cfg(rough=True),
     play_env_cfg=make_microduck_splits_cycle_env_cfg(play=True, rough=True),
     rl_cfg=MicroduckSplitsCycleRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Pistol squat — commanded, single-leg squat. Left leg stance, right leg
+# free (no fixed pose target — see design spec).
+register_mjlab_task(
+    task_id="Mjlab-Pistol-Flat-MicroDuck",
+    env_cfg=make_microduck_pistol_env_cfg(),
+    play_env_cfg=make_microduck_pistol_env_cfg(play=True),
+    rl_cfg=MicroduckPistolRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-Pistol-Rough-MicroDuck",
+    env_cfg=make_microduck_pistol_env_cfg(rough=True),
+    play_env_cfg=make_microduck_pistol_env_cfg(play=True, rough=True),
+    rl_cfg=MicroduckPistolRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 
@@ -420,6 +442,7 @@ _BACKLASH_TASKS = (
     ("Mjlab-RollerSlope-Flat-Backlash-MicroDuck", make_microduck_roller_slope_env_cfg, {}, MicroduckRollerSlopeRlCfg, _BL_ROLLERS),
     ("Mjlab-Splits-Flat-Backlash-MicroDuck", make_microduck_splits_env_cfg, {}, MicroduckSplitsRlCfg, _BL_ALLCOL),
     ("Mjlab-SplitsCycle-Flat-Backlash-MicroDuck", make_microduck_splits_cycle_env_cfg, {}, MicroduckSplitsCycleRlCfg, _BL_ALLCOL),
+    ("Mjlab-Pistol-Flat-Backlash-MicroDuck", make_microduck_pistol_env_cfg, {}, MicroduckPistolRlCfg, _BL_ALLCOL),
 )
 for _task_id, _make_cfg, _kw, _rl_cfg, _robot_cfg in _BACKLASH_TASKS:
     register_mjlab_task(
