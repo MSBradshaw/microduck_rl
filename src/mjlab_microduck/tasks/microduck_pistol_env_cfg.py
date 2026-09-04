@@ -253,10 +253,24 @@ def make_microduck_pistol_env_cfg(
     # Free-leg clearance — NEW for this task (mdp.py Task 1). Height-based,
     # not a joint-angle target: the only reward term touching the right leg
     # at all.
+    # `asset_cfg` passed explicitly (matches the function's own default
+    # SceneEntityCfg("robot", site_names=("right_foot",)) exactly) — mjlab's
+    # reward manager only calls .resolve() on SceneEntityCfg objects present
+    # in a term's `params` dict (manager_base.py's _resolve_common_term_cfg
+    # iterates term_cfg.params.values()), so a SceneEntityCfg left as a bare
+    # function default is never resolved and site_ids stays an unresolved
+    # slice. Every other site/body-scoped reward in this file (roll_split,
+    # pitch_split, body_ang_vel, ...) already follows this explicit-params
+    # convention.
     cfg.rewards["free_leg_clearance"] = RewardTermCfg(
         func=microduck_mdp.pistol_free_leg_clearance,
         weight=2.0,
-        params={"command_name": "twist", "margin": 0.03, "std": 0.02},
+        params={
+            "command_name": "twist",
+            "margin": 0.03,
+            "std": 0.02,
+            "asset_cfg": SceneEntityCfg("robot", site_names=("right_foot",)),
+        },
     )
 
     cfg.rewards["posture_height"] = RewardTermCfg(
@@ -680,7 +694,7 @@ def make_microduck_pistol_env_cfg(
         func=microduck_mdp.posture_depth_curriculum,
         params={
             "reward_names":   ("posture_pose_stance", "posture_pose_l1", "posture_composite"),
-            "joint_indices":  tuple(_STANCE_LEG_JOINTS),
+            "joint_indices":  tuple(PISTOL_STANCE_OVERRIDES.keys()),
             "full_overrides": dict(PISTOL_STANCE_OVERRIDES),
             "depth_stages": [
                 {"step": 0,          "fraction": 0.3},
