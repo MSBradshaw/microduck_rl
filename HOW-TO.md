@@ -386,6 +386,113 @@ Or just stop the whole container if you're done for a while:
 actually want to tear it down, but then you lose the installed
 git/osmesa/uv and have to redo that setup step).
 
+## Running natively on an M-series Mac (no Docker)
+
+Everything above assumes this Intel Mac, where torch/mujoco/onnxruntime
+have no x86_64 wheels and Docker is the only way to get a linux/amd64
+Python (see the top of this file). An M-series (Apple Silicon) Mac doesn't
+have that problem: `uv.lock` carries `macosx_11_0_arm64` wheels for
+`torch`, `mujoco`, and `warp_lang`, and the `[tool.uv.sources]` override
+that routes torch to a CUDA index only fires on
+`sys_platform == 'linux' and platform_machine == 'aarch64'` (the DGX
+Spark/GB10 box) — a Mac never matches that marker regardless of chip. So
+on an M-series Mac:
+
+```bash
+git clone https://github.com/MSBradshaw/microduck_rl.git
+cd microduck_rl
+git checkout develop   # main and develop are equivalent as of 2026-09-03
+uv sync
+```
+
+runs natively — no container, no bind mount, no `docker exec` wrapping
+every command — and gets a real GPU-backed window for the native MuJoCo
+viewer, which is the reason the two scripts below exist as separate files
+rather than folded into the Docker-only workflow above.
+
+### `scripts/infer_policy_statemachine.py` — autonomous walk↔splits state machine
+
+A standalone copy of `scripts/infer_policy.py` (native GLFW viewer,
+otherwise byte-for-byte the same starting point) with an autonomous
+WALK↔SPLITS state machine layered on top. `infer_policy.py` itself is
+**untouched** — this is a separate file so the plain manual-control path
+always still works exactly as it did before.
+
+**Where it lives:** the `WalkSplitsStateMachine` class, defined near the
+bottom of the file just above `def main()`. Everything else in the file
+(the `PolicyInference` class, `TerminalInput`, the keyboard-handling loop
+in `main()`) is the same machinery `infer_policy.py` already had — the
+state machine just calls into it (`policy.set_vel_cmd(...)`,
+`policy.trigger_behavior(...)`), it doesn't reimplement any of it.
+
+**How it works:**
+
+- Two states, **WALK** and **SPLITS**, each with a randomized dwell time
+  (`--walk-dwell MIN MAX`, default `5.0 8.0`; `--splits-dwell MIN MAX`,
+  default `3.0 5.0` — WALK's range is longer on purpose, so it spends more
+  time walking on average, without hard-biasing the transition itself).
+- Entering WALK samples a fresh `(lin_vel_x, lin_vel_y)`: `lin_vel_x` is
+  always positive (`--vel-x-range MIN MAX`, default `0.10 0.30` m/s — zero
+  or negative would just stand there or brake), `lin_vel_y` can be either
+  sign (`--vel-y-range MIN MAX`, default `-0.10 0.10` m/s) so the walk
+  curves left or right instead of always going straight.
+- Entering SPLITS calls `PolicyInference.trigger_behavior("splits",
+  duration=...)` — the same timed auto-return machinery
+  `--kick-left`/`--kick-right`/`--roulade` already use in `infer_policy.py`
+  — but with `trigger_behavior` extended (in this file only) to accept a
+  per-call `duration` override, so every SPLITS entry gets a freshly
+  randomized dwell instead of one fixed value for the whole run.
+- At every dwell boundary, a fair coin flip decides stay (re-roll the same
+  kind of state) vs. switch to the other — either state can self-loop, it's
+  not a strict alternation.
+- **Keyboard always wins.** Any velocity key (arrows, A/E, space) marks the
+  state machine "manual" and it stops touching `vel_cmd` until
+  `--idle-timeout` seconds (default `5.0`) pass with no further keypress —
+  then it resumes with a fresh dwell timer, keeping whatever you last
+  commanded rather than snapping back to a random value the instant it
+  reactivates.
+- **Splits does not know how to stand up.** The trained splits skill
+  (`microduck_splits`, v1 — see "What's been trained so far" below) is a
+  one-way descend-and-hold; it was never trained to rise. So when its dwell
+  timer ends, control swaps straight back to the walking policy from the
+  split pose — no scripted recovery, no position reset. That's deliberate
+  for this v1: watch what actually happens (it'll likely struggle or fall
+  the first few times) rather than paper over a transition nothing has
+  actually learned yet.
+
+Run it:
+
+```bash
+uv run python scripts/infer_policy_statemachine.py \
+  --walking logs/rsl_rl/velocity/2026-09-03_03-59-37_velocity/2026-09-03_03-59-37_velocity.onnx \
+  --splits logs/rsl_rl/microduck_splits/2026-09-03_21-29-18_microduck_splits/2026-09-03_21-29-18_microduck_splits.onnx \
+  --new-cmd-obs
+```
+
+(Those two paths are this repo's own latest walk/splits runs — swap in
+whatever checkpoints you're actually using; both need `scripts/export.py`
+to have produced them, not a hand-converted checkpoint, per AGENTS.md's obs
+normalizer rule.) `--new-cmd-obs` is required — both ONNX files take a 61D
+input (13D unified command block), confirmed against each file's actual
+`get_inputs()[0].shape` rather than assumed.
+
+Keyboard controls are exactly `infer_policy.py`'s existing set (arrows/A/E
+for velocity, SPACE to coast, T to pause inference, Q to quit — full list
+prints on startup); the state machine only *watches* those same keypresses
+to know when to yield control, it doesn't add any new bindings.
+
+### `scripts/infer_policy_viser.py` — browser viewer for headless Docker
+
+A second standalone copy of `infer_policy.py`, swapping the native
+`mujoco.viewer.launch_passive` window for `mjviser`'s `ViserMujocoScene`
+(the lower-level piece mjlab's own `play --viewer viser` renders through,
+without mjlab's env/policy coupling) — streams to a browser tab on
+`--port` (default 8080) instead of opening a native window. This exists
+for the headless-Docker path on the Intel Mac above, where there's no
+display for a native window to attach to. On an M-series Mac you generally
+don't need it — the native window in `infer_policy.py` /
+`infer_policy_statemachine.py` just works there directly.
+
 ## Pushing your work (personal fork)
 
 `origin` (pollen-robotics) and `fork` (yours) are separate remotes — regular
