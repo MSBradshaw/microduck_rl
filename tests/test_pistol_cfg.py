@@ -1,5 +1,3 @@
-import torch
-
 from mjlab_microduck.tasks.microduck_pistol_env_cfg import (
     _STANCE_LEG_JOINTS,
     EPISODE_LENGTH_S,
@@ -9,21 +7,7 @@ from mjlab_microduck.tasks.microduck_pistol_env_cfg import (
     PISTOL_RESET_OVERRIDES,
     make_microduck_pistol_env_cfg,
 )
-from mjlab_microduck.tasks.mdp import AlternatingPostureCommand, AlternatingPostureCommandCfg
-
-
-class _FakeEnv:
-    def __init__(self, num_envs: int):
-        self.num_envs = num_envs
-        self.device = "cpu"
-
-
-def _make_alternating_command(num_envs: int) -> AlternatingPostureCommand:
-    cmd = object.__new__(AlternatingPostureCommand)
-    cmd._env = _FakeEnv(num_envs)
-    cmd.vel_command_b = torch.zeros(num_envs, 3)
-    cmd._ever_resampled = torch.zeros(num_envs, dtype=torch.bool)
-    return cmd
+from mjlab_microduck.tasks.mdp import AlternatingPostureCommandCfg
 
 
 def test_env_builds_train_and_play():
@@ -173,3 +157,33 @@ def test_task_is_registered():
     assert "Mjlab-Pistol-Flat-MicroDuck" in list_tasks()
     assert "Mjlab-Pistol-Rough-MicroDuck" in list_tasks()
     assert "Mjlab-Pistol-Flat-Backlash-MicroDuck" in list_tasks()
+
+
+def test_no_trunk_xy_displacement_penalty():
+    # Design spec §3.4: a pistol squat REQUIRES the trunk to shift laterally
+    # over the stance foot (a real ~22-26mm hip shift, measured in the
+    # design spec's kinematic pass) -- unlike every other commanded-posture
+    # task in this family, which is roughly bilaterally symmetric and never
+    # needs the trunk to translate sideways. A trunk-xy-position/velocity
+    # tracking penalty pulled in from elsewhere would silently fight that
+    # required weight shift and the policy would just never balance. §3.4
+    # says this audit "must happen as part of implementation, not be
+    # silently skipped" -- it was checked manually during the final review
+    # (confirmed clean), but that check was never locked in as a test until
+    # now. This is a defensive regression test against one being added
+    # later, not a claim that any of these currently exist.
+    cfg = make_microduck_pistol_env_cfg()
+    banned_reward_names = (
+        "track_linear_velocity",
+        "base_lin_vel_l2",
+        "trunk_position_penalty",
+        "com_position_penalty",
+        "trunk_xy_penalty",
+        "trunk_lin_vel_xy_l2",
+    )
+    for name in banned_reward_names:
+        assert name not in cfg.rewards, (
+            f"found {name!r} in cfg.rewards -- a trunk xy displacement/"
+            "velocity penalty would fight the lateral hip shift this task's "
+            "physics requires (design spec §3.4)"
+        )

@@ -79,6 +79,38 @@ task's regularizers might assume is always undesirable (§3.4).
 config is finalized during implementation (this session measured a range
 across nearby candidates, not yet a single locked-in number).
 
+### 2.1 Correction (post-implementation review)
+
+The initially-locked-in values (`PISTOL_Z = 0.0995`, free-leg anchor
+`right_hip_pitch=0.8, right_knee=-0.4, right_ankle=0.2`, "R3" above) were
+**wrong**: they were measured from a pose where the FREE (right) foot ended
+up touching the floor, not the STANCE (left) foot — the opposite of what
+the whole measurement is supposed to characterize. This was an oversight in
+reading `scripts/measure_pistol_pose.py`'s own `floor_contacts` output by
+eye (the script reports which geom actually touches the floor; that field
+was never checked/asserted against, only the trunk height and self-collision
+columns were eyeballed).
+
+Re-measured with the same script/technique, checking `floor_contacts`
+explicitly this time:
+
+```python
+PISTOL_Z = 0.0766  # was 0.0995
+PISTOL_FREE_LEG_ANCHOR = {
+    11: 1.3,   # right_hip_pitch  (was 0.8)
+    12: -0.9,  # right_knee       (was -0.4)
+    13: 0.3,   # right_ankle      (was 0.2)
+}
+```
+
+Verified: at α = 0.85 with this corrected free-leg config,
+`floor_contacts == {'left_foot_collision'}` — i.e. the STANCE foot is the
+one on the ground, as intended. `scripts/measure_pistol_pose.py`'s
+`__main__` block now asserts this explicitly (hard crash instead of a
+silent bad measurement) so this class of mistake can't recur unnoticed.
+`PISTOL_STANCE_OVERRIDES` (the left-leg depth dict) was never wrong and is
+unchanged by this correction.
+
 ## 3. Reward design
 
 ### 3.1 Stance leg pose target — reuse unchanged

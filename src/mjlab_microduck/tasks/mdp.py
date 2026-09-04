@@ -7365,6 +7365,7 @@ def pistol_free_leg_clearance(
     margin: float = 0.03,
     std: float = 0.02,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", site_names=("right_foot",)),
+    sensor_name: str = "feet_ground_contact",
 ) -> torch.Tensor:
     """Reward the free (right) foot for clearing the ground during a
     commanded pistol squat.
@@ -7376,6 +7377,18 @@ def pistol_free_leg_clearance(
     as it dips below. Gated on the commanded posture blend (0 at STAND, 1 at
     full squat) so it's inert during normal standing -- a foot naturally
     near the ground while standing shouldn't be punished.
+
+    ALSO hard-gated to zero whenever the right foot's own contact sensor
+    reads "touching" (design spec §3.2 specifies both a hard contact gate
+    AND soft height shaping; the height term alone is exploitable -- the
+    `right_foot` site sits above the foot's actual sole, so a planted-but-
+    tilted foot can read `site_z` well above zero even with the sole flat on
+    the ground). `sensor_name` must name a `ContactSensorCfg` whose `found`
+    field has shape `(num_envs, 2)` with index 0 = left foot, index 1 =
+    right foot (the `ContactMatch` primary pattern order
+    `left_foot_collision|right_foot_collision` used by this task's own
+    `feet_ground_cfg`). The height shaping stays active even when gated --
+    it still gives a gradient to climb OUT of contact.
     """
     blend = _posture_blend(env, command_name)
     asset = env.scene[asset_cfg.name]
@@ -7385,7 +7398,10 @@ def pistol_free_leg_clearance(
     )
     shortfall = torch.clamp(margin - foot_z, min=0.0)
     height_reward = torch.exp(-((shortfall / std) ** 2))
-    return blend * height_reward
+    sensor = env.scene.sensors[sensor_name]
+    right_foot_contact = torch.clamp(sensor.data.found[:, 1], min=0.0, max=1.0)
+    contact_gate = 1.0 - right_foot_contact
+    return blend * height_reward * contact_gate
 
 
 def posture_depth_curriculum(

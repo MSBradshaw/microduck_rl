@@ -41,8 +41,18 @@ class _CommandManager:
         return self._flag
 
 
+class _ContactSensorData:
+    def __init__(self, found):
+        self.found = found  # (num_envs, 2) -- index 0=left foot, 1=right foot
+
+
+class _ContactSensor:
+    def __init__(self, found):
+        self.data = _ContactSensorData(found)
+
+
 class _ClearanceEnv:
-    def __init__(self, right_foot_z: float, blend: float):
+    def __init__(self, right_foot_z: float, blend: float, right_contact: float = 0.0):
         num_envs = 1
         site_pos = torch.zeros(num_envs, 1, 3)
         site_pos[0, 0, 2] = right_foot_z
@@ -50,6 +60,9 @@ class _ClearanceEnv:
         self.scene = self
         self.terrain = _Terrain(num_envs)
         self.command_manager = _CommandManager(torch.tensor([[blend, 0.0, 0.0]]))
+        # left foot's contact state is irrelevant to this reward -- 0.0 always.
+        found = torch.tensor([[0.0, right_contact]])
+        self.sensors = {"feet_ground_contact": _ContactSensor(found)}
 
     def __getitem__(self, _name):
         return self._asset
@@ -62,19 +75,19 @@ class _FakeAssetCfg:
 
 
 def test_clearance_full_reward_once_above_margin():
-    env = _ClearanceEnv(right_foot_z=0.10, blend=1.0)
+    env = _ClearanceEnv(right_foot_z=0.10, blend=1.0, right_contact=0.0)
     out = pistol_free_leg_clearance(
         env, command_name="twist", margin=0.03, std=0.02,
-        asset_cfg=_FakeAssetCfg([0]),
+        asset_cfg=_FakeAssetCfg([0]), sensor_name="feet_ground_contact",
     )
     assert abs(float(out[0]) - 1.0) < 1e-4
 
 
 def test_clearance_drops_toward_zero_when_touching_ground():
-    env = _ClearanceEnv(right_foot_z=0.0, blend=1.0)
+    env = _ClearanceEnv(right_foot_z=0.0, blend=1.0, right_contact=0.0)
     out = pistol_free_leg_clearance(
         env, command_name="twist", margin=0.03, std=0.02,
-        asset_cfg=_FakeAssetCfg([0]),
+        asset_cfg=_FakeAssetCfg([0]), sensor_name="feet_ground_contact",
     )
     assert float(out[0]) < 0.15
 
@@ -83,12 +96,28 @@ def test_clearance_gated_to_zero_at_stand_blend():
     # blend=0 (fully standing, not squatting) -- inert regardless of foot
     # height, per spec §3.2 ("gated on posture blend so it's inert during
     # normal standing").
-    env = _ClearanceEnv(right_foot_z=0.0, blend=0.0)
+    env = _ClearanceEnv(right_foot_z=0.0, blend=0.0, right_contact=0.0)
     out = pistol_free_leg_clearance(
         env, command_name="twist", margin=0.03, std=0.02,
-        asset_cfg=_FakeAssetCfg([0]),
+        asset_cfg=_FakeAssetCfg([0]), sensor_name="feet_ground_contact",
     )
     assert abs(float(out[0])) < 1e-6
+
+
+def test_clearance_hard_gate_zeroes_reward_even_when_geometrically_clear():
+    # The exploit this gate closes: the `right_foot` SITE sits above the
+    # foot's actual sole, so a planted-but-tilted foot can read a
+    # comfortably-above-margin site_z (here 0.10, same as the "full reward"
+    # case above) even with the sole flat on the ground. The height-only
+    # version of this reward can't see that -- only the contact sensor can.
+    # A foot the sensor reports as touching must score ~0 regardless of how
+    # clear it looks geometrically.
+    env = _ClearanceEnv(right_foot_z=0.10, blend=1.0, right_contact=1.0)
+    out = pistol_free_leg_clearance(
+        env, command_name="twist", margin=0.03, std=0.02,
+        asset_cfg=_FakeAssetCfg([0]), sensor_name="feet_ground_contact",
+    )
+    assert abs(float(out[0])) < 1e-4
 
 
 class _DepthDefaultJointData:

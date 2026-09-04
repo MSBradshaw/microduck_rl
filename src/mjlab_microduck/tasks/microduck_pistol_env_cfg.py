@@ -23,7 +23,7 @@ What's NEW here (not in splits_cycle):
   - `pistol_free_leg_clearance` (mdp.py): the free leg gets a HEIGHT-based
     reward, not a joint-angle pose-match target like every other commanded-
     posture task's second leg. Only the STANCE leg (indices 0-4) appears in
-    `_LEG_JOINTS`/`joint_indices` for the pose-match/composite terms.
+    `_STANCE_LEG_JOINTS`/`joint_indices` for the pose-match/composite terms.
   - `posture_depth_curriculum` (mdp.py): unlike splits_cycle (which dropped
     an equivalent curriculum, judging its own per-transition ramp
     sufficient), this task ramps `PISTOL_STANCE_OVERRIDES` itself from a
@@ -108,19 +108,28 @@ STAND_Z = 0.115
 # posture_depth_curriculum (Task 1) ramps a fraction OF THESE values, not
 # of sitstand's raw values. Right (free) leg has NO entry here -- it is
 # never a reward target (see mdp.pistol_free_leg_clearance).
-PISTOL_Z = 0.0995
+#
+# CORRECTED post-review (design spec §2 addendum): the original PISTOL_Z
+# (0.0995) and PISTOL_FREE_LEG_ANCHOR (hip_pitch=0.8, knee=-0.4, ankle=0.2,
+# "R3") were measured from a pose where the FREE foot ended up touching the
+# floor instead of the stance foot -- an oversight in reading the
+# measurement script's own `floor_contacts` output. Re-measured with
+# scripts/measure_pistol_pose.py: `floor_contacts == {"left_foot_collision"}`
+# now holds (the stance foot, not the free foot, is the one on the ground).
+PISTOL_Z = 0.0766
 PISTOL_STANCE_OVERRIDES = {
     2: -0.4154,   # left_hip_pitch  (HOME -0.4579, SIT -0.4079, 85% of the way)
     3:  1.1468,   # left_knee       (HOME -0.0049, SIT  1.35,   85% of the way)
     4:  0.0680,   # left_ankle      (HOME  0.4530, SIT  0.0,    85% of the way)
 }
-# Right (free) leg anchor -- measurement sweep's "R3" candidate, self-
-# collision-free through PISTOL_STANCE_OVERRIDES' depth. Reset-only (Task 2
-# Step 12's set_ground_state event); NEVER used as a reward target.
+# Right (free) leg anchor -- corrected measurement, self-collision-free
+# through PISTOL_STANCE_OVERRIDES' depth, with the stance (left) foot -- not
+# the free (right) foot -- the one actually touching the ground. Reset-only
+# (Task 2 Step 12's set_ground_state event); NEVER used as a reward target.
 PISTOL_FREE_LEG_ANCHOR = {
-    11: 0.8,    # right_hip_pitch
-    12: -0.4,   # right_knee
-    13: 0.2,    # right_ankle
+    11: 1.3,    # right_hip_pitch
+    12: -0.9,   # right_knee
+    13: 0.3,    # right_ankle
 }
 PISTOL_RESET_OVERRIDES = {**PISTOL_STANCE_OVERRIDES, **PISTOL_FREE_LEG_ANCHOR}
 PISTOL_PITCH_TARGET = 0.0  # design default, matches STAND's upright target too — open per design spec §7
@@ -270,6 +279,7 @@ def make_microduck_pistol_env_cfg(
             "margin": 0.03,
             "std": 0.02,
             "asset_cfg": SceneEntityCfg("robot", site_names=("right_foot",)),
+            "sensor_name": "feet_ground_contact",
         },
     )
 
@@ -298,14 +308,6 @@ def make_microduck_pistol_env_cfg(
         params={"command_name": "twist", "max_height": 0.125, "max_vz": MAX_RISE_SPEED},
     )
 
-    # ── Orientation shaping — FROM splits v1, unchanged ────────────────────────
-    # Both commanded postures target pitch=0 (SPLIT_PITCH_TARGET is a design
-    # default equal to standing's own upright target), so this pair works
-    # identically well in both postures — no posture-conditioning needed.
-    # Roll: generous std (mild sideways sway is fine). Pitch: tighter, tracks
-    # the measured/design resting pitch, not just "upright" in general —
-    # kept instead of sitstand's generic upright_linear/upright_while_tall
-    # because splits sits closer to a real tip-over than sit does.
     # Orientation — reused unchanged from splits/splits_cycle: generous roll
     # tolerance (std=0.45), tighter pitch (std=0.15). Deliberately NOT
     # tightened despite the pistol squat needing more lateral lean than

@@ -152,25 +152,50 @@ if __name__ == "__main__":
 
     # Right (free) leg: NOT a reward target (§3.2 of the spec uses a
     # foot-clearance gate, not pose-matching) -- these are candidate
-    # RESET/INIT anchor poses only. R3 is the recommended one: stays
-    # self-collision-free through alpha=0.85 (the curriculum ceiling --
-    # alpha=1.0 self-collides against a lifted right leg regardless of
-    # which of these three is used).
+    # RESET/INIT anchor poses only.
+    #
+    # RECOMMENDED is the corrected candidate (post-review fix -- the
+    # original "R3" candidate below was picked from a pose where the FREE
+    # foot ended up touching the floor instead of the stance foot, an
+    # oversight in reading `floor_contacts` by eye; see design spec §2's
+    # addendum). RECOMMENDED is self-collision-free through alpha=0.85 (the
+    # curriculum ceiling) with the STANCE foot -- not the free foot --
+    # actually on the ground. R1/R2 are kept as other swept candidates for
+    # reference/comparison, not recommendations.
     RIGHT_CANDIDATES = {
         "R1 hip.4 knee0 ankle0":    {"right_hip_pitch": 0.4, "right_knee": 0.0, "right_ankle": 0.0},
         "R2 hip.6 knee-.2 ankle0":  {"right_hip_pitch": 0.6, "right_knee": -0.2, "right_ankle": 0.0},
-        "R3 hip.8 knee-.4 ankle.2": {"right_hip_pitch": 0.8, "right_knee": -0.4, "right_ankle": 0.2},
+        "RECOMMENDED hip1.3 knee-.9 ankle.3": {
+            "right_hip_pitch": 1.3, "right_knee": -0.9, "right_ankle": 0.3,
+        },
     }
 
-    print(f"{'alpha':>6} {'right leg':>26} | {'trunk_z':>8} | {'l_foot_z':>9} | {'r_foot_z':>9} | "
+    print(f"{'alpha':>6} {'right leg':>36} | {'trunk_z':>8} | {'l_foot_z':>9} | {'r_foot_z':>9} | "
           f"{'floor contact':>24} | {'self-col':>8} | {'CoM in FP':>9} | {'margin x/y (mm)':>16}")
+    recommended_result_at_ceiling = None
     for alpha in (0.3, 0.6, 0.85, 1.0):
         left = blend_left(alpha)
         for label, right in RIGHT_CANDIDATES.items():
             overrides = dict(left)
             overrides.update(right)
             r = settle_pistol_pose(model, overrides)
-            print(f"{alpha:>6.2f} {label:>26} | {r['trunk_z']:>8.4f} | {r['left_foot_z']:>9.4f} | "
+            print(f"{alpha:>6.2f} {label:>36} | {r['trunk_z']:>8.4f} | {r['left_foot_z']:>9.4f} | "
                   f"{r['right_foot_z']:>9.4f} | {str(r['floor_contacts']):>24} | "
                   f"{str(r['self_collision']):>8} | {str(r['com_in_footprint']):>9} | "
                   f"{r['margin_x_mm']:>7.1f}/{r['margin_y_mm']:<7.1f}")
+            if label.startswith("RECOMMENDED") and alpha == 0.85:
+                recommended_result_at_ceiling = r
+
+    # Hard assertion (not just an eyeballed table): this exact class of bug
+    # -- picking a config where the FREE foot was on the ground instead of
+    # the STANCE foot -- previously went undetected by eye. Make it a loud
+    # crash instead of a silent bad measurement.
+    assert recommended_result_at_ceiling is not None
+    assert recommended_result_at_ceiling["floor_contacts"] == {"left_foot_collision"}, (
+        "pistol pose measurement sanity check failed: the STANCE (left) foot "
+        "must be the only one touching the floor at the recommended "
+        f"free-leg config and curriculum-ceiling alpha=0.85, but got "
+        f"floor_contacts={recommended_result_at_ceiling['floor_contacts']!r} -- "
+        "this is exactly the bug where the FREE foot ends up on the ground "
+        "instead of the stance foot. Do not use this measurement."
+    )
