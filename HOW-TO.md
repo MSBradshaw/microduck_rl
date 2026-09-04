@@ -496,6 +496,98 @@ display for a native window to attach to. On an M-series Mac you generally
 don't need it — the native window in `infer_policy.py` /
 `infer_policy_statemachine.py` just works there directly.
 
+### `scripts/duck_autopilot.py` — multi-skill state machine (v2)
+
+v1 (above) only ever knew WALK and SPLIT. v2 generalizes it to whichever of
+`{walk, sit, split, roulade, kick_left, kick_right}` were actually loaded via
+CLI flags, plus a `standup` skill chained specifically after `sit`. Standalone
+file — `infer_policy.py` AND `infer_policy_statemachine.py` (v1) are both
+left untouched; v1's checkpoints (Velocity, Splits v1) exist today, v2's
+mostly don't yet (see "What's been trained so far" below and
+`~/microduck-results/batch1-walking-2026-09-03/README.md` — as of
+2026-09-04 all five batch jobs plus splits-cycle are still
+`RUNNING`/`SCHEDULING`, none evaluated).
+
+**Where it lives:** the `AutoStateMachine` class, defined just above
+`def main()` — read its docstring for the full per-kind lifecycle, summarized
+below. `PolicyInference` gained a few small additions to support it (all in
+this file only, not `infer_policy.py`): `trigger_behavior` takes an optional
+`duration` override (same generalization v1 made), a `split_session`/
+`split_mode`/`toggle_split()` trio that's a byte-for-byte mirror of the
+existing `sit_session`/`sit_mode`/`toggle_sit()` (splits-cycle uses the exact
+same flag-commanded mechanism as sitstand — confirmed by reading
+`AlternatingPostureCommand` in `mdp.py`: it's a `SitStandCommand` subclass,
+same raw-flag obs contract, just deterministic alternation during training
+instead of independent draws), and `standup` joins the existing
+`behavior_sessions` one-shot-with-timer machinery (same as kick/roulade)
+rather than getting its own new plumbing.
+
+**Three different lifecycles**, one per pool-member kind:
+
+- **`walk`** (continuous, twist-commanded): unchanged from v1 — fresh random
+  `(lin_vel_x, lin_vel_y)` each entry (`--vel-x-range`/`--vel-y-range`),
+  random dwell (`--walk-dwell`). This is the hub: every exit, from any other
+  state, lands back here before the next dwell/coin decision.
+- **`sit` / `split`** (flag-toggled postures, held indefinitely — NOT
+  one-shots): entering calls `policy.toggle_sit()`/`toggle_split()` and
+  starts a dwell timer the state machine owns itself (the policy gives no
+  "done" signal, it just holds). At dwell end, a coin decides stay-seated
+  (fresh dwell) vs. exit. **`split` exits via its own self-rise** — flip the
+  flag off, wait `--posture-settle` seconds (matched to `SitStandCommand`'s
+  ~2s ramp) for the glide to finish, then back to walk. **`sit` prefers the
+  dedicated `standup` skill over sitstand's own self-rise**, if `--standup`
+  was loaded: `sit_mode` is cleared directly (not via `toggle_sit()`, which
+  would leave sitstand's session active and let *it* start rising before
+  `trigger_behavior` ever runs) immediately before triggering `standup` — the
+  isolated test for this file asserts `sit_mode` is already `False` on every
+  `standup` trigger, i.e. there's no tick where both are racing. Falls back
+  to the same self-rise-then-settle path as `split` if `--standup` wasn't
+  loaded, so `sit` still works standalone.
+- **`roulade` / `kick_left` / `kick_right` / `standup`** (one-shots): same
+  `trigger_behavior` + timer auto-return machinery as v1/`infer_policy.py` —
+  this class just watches `policy.behavior_mode` clear.
+
+**Why `standup` is chained, not pool-selectable:** it resets from a *sitting*
+keyframe (trunk z≈0.07), not a fall — triggering it from standing is
+out-of-distribution the same way splits→walk was in v1, just on the *entry*
+side instead of the exit side. `sit` is the only state that can hand it a
+genuinely seated pose, so it only ever fires as `sit`'s exit path.
+
+Any velocity key (arrows/A/E/space) OR action key (Y/J/K/L/R — sit/split
+toggle, kick, roulade) marks "manual" and pauses everything above until
+`--idle-timeout` seconds pass with no further keypress — broader than v1,
+since v2 has state the keyboard can directly manipulate (postures, triggers)
+beyond just velocity.
+
+Run it once at least one more skill besides `--walking` exists (needs `--walking`
+plus ≥1 of `--sitstand`/`--splits-cycle`/`--roulade`/`--kick-left`/`--kick-right`
+to actually build the state machine — otherwise it just runs manual-only,
+same as plain `infer_policy.py`, and says so on startup):
+
+```bash
+uv run python scripts/duck_autopilot.py \
+  --walking <velocity-or-velstand>.onnx \
+  --sitstand <sitstand>.onnx \
+  --splits-cycle <splits_cycle>.onnx \
+  --standup <standup>.onnx \
+  --roulade <roulade>.onnx \
+  --kick-left <ballkick>.onnx --kick-right <ballkick>.onnx \
+  --new-cmd-obs
+```
+
+(All six ONNX paths are placeholders — none of these five batch checkpoints
+exist yet as of 2026-09-04; swap in whatever's actually been exported once
+each run finishes. `--kick-left`/`--kick-right` can point at the same
+BallKick export, one per foot, per `infer_policy.py`'s existing convention.)
+
+Verified so far: syntax, `--help`, and an isolated unit test (fake policy, no
+MuJoCo/display) covering full pool rotation, the standup-race assertion
+above, the no-`--standup` fallback, mutual exclusion between `sit_mode`/
+`split_mode`, and manual-override pause/resume. **Not yet verified:** the
+actual live viewer/physics loop against real checkpoints, since none exist
+yet — that's next once the batch jobs finish (see "What's been trained so
+far" below) and on the M-series Mac where the native viewer actually renders.
+
 ## Pushing your work (personal fork)
 
 `origin` (pollen-robotics) and `fork` (yours) are separate remotes — regular
