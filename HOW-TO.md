@@ -686,3 +686,13 @@ cd microduck_rl
   variants of these five, and the roller/swizzle family
   (`Velocity-Swizzle`, `RollerCrouch`, `RollerSlope`, `RollerStandUp`,
   `Spin`, `Velocity-Flat-MicroDuck-Rollers`).
+- **2026-09-04, `Mjlab-Pistol-Flat-MicroDuck`** — commanded single-leg
+  pistol squat (left leg stance, right leg free — no fixed pose target for
+  the free leg, only a height-based clearance reward; design spec
+  `docs/superpowers/specs/2026-09-04-microduck-pistol-squat-design.md`).
+  Target pose measured via `scripts/measure_pistol_pose.py` (self-collision
+  caps depth at 85% of sitstand's SIT keyframe, not 100%). Explicit depth
+  curriculum on top of the usual per-transition ramp — a harder balance
+  problem than splits_cycle, which judged its own per-transition ramp
+  sufficient. Job `6a9af987259f8e97255df74f`, 8000 iterations, not yet
+  evaluated.
