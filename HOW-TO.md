@@ -12,10 +12,11 @@ natively.
   bind-mounted into the containers at `/w`. Two remotes: `origin`
   (pollen-robotics, upstream) and `fork`
   ([MSBradshaw/microduck_rl](https://github.com/MSBradshaw/microduck_rl),
-  personal). All active work happens on `develop`; `main` on the fork is kept
-  fast-forwarded to `develop` (`git push fork develop:main`) so a fresh clone
-  of the fork's default branch has everything without needing to know to
-  check out `develop`.
+  personal). All active work happens on local `develop`; every push goes to
+  `fork`'s **`main`** (`git push fork develop:main`), which is the branch
+  that actually carries this local history, so a fresh clone of the fork's
+  default branch has everything. **`fork`'s own `develop` branch is NOT
+  this** — see "Pushing your work" below before pushing there.
 - **Containers:** `microduck` (port 8080) and `microduck2` (port 8081) —
   persistent, `python:3.12-slim` + git/osmesa/uv installed on top. Reuse them
   rather than recreating, since git/osmesa need reinstalling on a fresh
@@ -401,7 +402,9 @@ on an M-series Mac:
 ```bash
 git clone https://github.com/MSBradshaw/microduck_rl.git
 cd microduck_rl
-git checkout develop   # main and develop are equivalent as of 2026-09-03
+# main has all local work (it's the fork's default branch already); no
+# checkout needed. Don't check out this fork's `develop` -- see "Pushing
+# your work" below for why it's a different, upstream-tracking history.
 uv sync
 ```
 
@@ -496,26 +499,45 @@ don't need it — the native window in `infer_policy.py` /
 ## Pushing your work (personal fork)
 
 `origin` (pollen-robotics) and `fork` (yours) are separate remotes — regular
-pushes go to `fork`, not `origin`:
+pushes go to `fork`, not `origin`. And on `fork`, they go to **`main`**, not
+`fork`'s own `develop`:
 
 ```bash
-git push fork develop           # your active branch
-git push fork develop:main      # keep the fork's default branch in sync too
+git push fork develop:main      # local develop -> fork's main, fast-forward
 ```
 
-`fork`'s `main` mirrors upstream `pollen-robotics/microduck_rl`'s `main` at
-the moment the fork was created, which (2026-09-03) turned out to be a
-strict ancestor of `develop` — so `develop:main` is always a plain
-fast-forward, never a merge. If `origin` ever moves in a way that stops being
-true, `git merge-base --is-ancestor <fork main sha> develop` will say so
-before you push.
+**Why not `git push fork develop`, despite the branch names matching?**
+Found out the hard way (2026-09-04): `fork`'s `develop` branch had quietly
+become an exact mirror of upstream `origin/develop` — 29 unrelated PR-merge
+commits (things like `bam_infer_policy`, which touches `infer_policy.py`
+itself upstream), sharing no history with local work past a 2026-08-27
+commit. Pushing local `develop` there outright fails (non-fast-forward),
+and merging it in means resolving conflicts against code nobody here has
+reviewed — not something to do as a side effect of "push my work." `main`,
+meanwhile, turned out to be exactly what's been tracking local `develop`
+the whole time (confirmed: `git merge-base HEAD fork/main` lands exactly on
+the previous local commit, every time) — so that's the actual target,
+despite this doc previously saying otherwise.
+
+Before pushing, it's cheap to double check `main` is still a clean
+fast-forward rather than assume it:
+
+```bash
+git fetch fork main
+git merge-base --is-ancestor fork/main HEAD && echo "fast-forward OK"
+```
+
+If that ever says no, something changed `fork/main` out from under local
+history (or local `develop` needs a pull first) — stop and look, don't force.
 
 To pull this down on a different machine:
 
 ```bash
 git clone https://github.com/MSBradshaw/microduck_rl.git
 cd microduck_rl
-git checkout develop   # main and develop are equivalent as of 2026-09-03
+# main is the fork's default branch and already has everything -- no
+# checkout needed. This fork's `develop` tracks upstream instead (see
+# above); don't check that out expecting local work.
 ```
 
 ## What's been trained so far (running log)
@@ -544,3 +566,31 @@ git checkout develop   # main and develop are equivalent as of 2026-09-03
   6000 iters, 4096 envs, `l4x1`) — first run trained with wandb logging
   enabled (see "Setting up wandb"), checkpoints at
   `mikeybrad/splits-cycle-run1-2026-09-03`. Not yet evaluated.
+- **2026-09-04, five walking-family tasks, first runs** — smoke-tested clean
+  (64 envs/5 iters each) and submitted to HF Jobs (4096 envs, `l4x1`, wandb
+  logging, `--timeout 12h --detach`). `--agent.max_iterations` picked per-task
+  from each cfg's own curriculum `weight_stages`/`range_stages`/`push_stages`
+  step boundaries (steps = iteration × 24), not the cfg's often-inflated
+  default (`AGENTS.md`'s rule of thumb: simple tricks ≈1000, gaits/curriculum-
+  heavy recovery 4000–6000) — none yet evaluated:
+  - `Mjlab-VelStand-Flat-MicroDuck` — fall+recover+walk combined; last
+    curriculum event (`RECOVERY_ECON_KICKIN_ITER`) at iter 1200, budgeted
+    5000 iters for gait-level consolidation headroom. Job
+    `6a9a0ee2259f8e97255dc153`, checkpoints at
+    `mikeybrad/velstand-run1-2026-09-03`.
+  - `Mjlab-StandUp-Flat-MicroDuck` — last curriculum stage at iter 4000,
+    budgeted 5000. Job `6a9a0eeee686246ca699fd67`, checkpoints at
+    `mikeybrad/standup-run1-2026-09-03`.
+  - `Mjlab-SitStand-Flat-MicroDuck` — last curriculum stage at iter 2500,
+    budgeted 3500. Job `6a9a0efbe686246ca699fd6a`, checkpoints at
+    `mikeybrad/sitstand-run1-2026-09-03`.
+  - `Mjlab-Roulade-Flat-MicroDuck` — last curriculum stage at iter 3500,
+    budgeted 4500. Job `6a9a0f07259f8e97255dc15c`, checkpoints at
+    `mikeybrad/roulade-run1-2026-09-03`.
+  - `Mjlab-BallKick-Flat-MicroDuck` — last curriculum stage at iter 1500,
+    budgeted 2000. Job `6a9a0f12e686246ca699fd72`, checkpoints at
+    `mikeybrad/ballkick-run1-2026-09-03`.
+  Deliberately held back for a later batch: every `-Backlash-` twin, `-Rough`
+  variants of these five, and the roller/swizzle family
+  (`Velocity-Swizzle`, `RollerCrouch`, `RollerSlope`, `RollerStandUp`,
+  `Spin`, `Velocity-Flat-MicroDuck-Rollers`).
